@@ -430,10 +430,42 @@ struct MediaItemView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            // Title row — just the label + filename for context, no action
+            // buttons. Actions live below the media where they're guaranteed
+            // visible (the top of small-footprint items like audio used to
+            // hide the Download button).
+            HStack(spacing: 6) {
                 Image(systemName: iconName).foregroundStyle(.secondary)
                 Text(item.label?.capitalized ?? item.kind.rawValue.capitalized)
                     .font(.subheadline.weight(.medium))
+                Text("·").foregroundStyle(.secondary)
+                Text(item.url.lastPathComponent)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+
+            // Media content.
+            switch item.kind {
+            case .image: ImageMediaView(url: item.url)
+            case .video: VideoMediaView(url: item.url)
+            case .audio: AudioMediaView(url: item.url)
+            case .file: FileMediaView(url: item.url)
+            }
+
+            // Action row — visible at the bottom of every item, regardless
+            // of kind. Download is the marquee action (glassProminent, full
+            // .regular size) so it's unmissable on small audio cards.
+            HStack(spacing: 8) {
+                if let err = saveError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer()
                 if canExpand {
                     Button {
@@ -456,25 +488,19 @@ struct MediaItemView: View {
                 .controlSize(.small)
                 Button { save() } label: {
                     if isSaving {
-                        HStack { ProgressView().controlSize(.small); Text("Saving…") }
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.small)
+                            Text("Saving…")
+                        }
                     } else {
-                        Label("Download", systemImage: "arrow.down.circle")
+                        Label("Download", systemImage: "arrow.down.circle.fill")
                     }
                 }
                 .buttonStyle(.glassProminent)
-                .controlSize(.small)
+                .controlSize(.regular)
                 .disabled(isSaving)
-            }
-
-            switch item.kind {
-            case .image: ImageMediaView(url: item.url)
-            case .video: VideoMediaView(url: item.url)
-            case .audio: AudioMediaView(url: item.url)
-            case .file: FileMediaView(url: item.url)
-            }
-
-            if let err = saveError {
-                Text(err).font(.caption).foregroundStyle(.red)
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .help("Save to your download folder (⇧⌘S)")
             }
         }
         .padding(10)
