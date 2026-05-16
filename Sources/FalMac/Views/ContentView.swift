@@ -70,12 +70,11 @@ private struct BalanceChip: View {
                     .font(.caption)
                 content
             }
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(background, in: Capsule())
-            .overlay(Capsule().stroke(borderColor, lineWidth: 0.5))
+            .padding(.horizontal, 10).padding(.vertical, 4)
             .foregroundStyle(foreground)
         }
         .buttonStyle(.plain)
+        .glassPill(tint: tint)
         .help(helpText)
         .disabled(state.apiKey.isEmpty)
     }
@@ -99,18 +98,12 @@ private struct BalanceChip: View {
         }
     }
 
-    private var background: AnyShapeStyle {
-        if state.apiKey.isEmpty { return AnyShapeStyle(Color.secondary.opacity(0.12)) }
-        if state.balanceError != nil && state.balance == nil { return AnyShapeStyle(Color.red.opacity(0.12)) }
-        if let bal = state.balance, bal < 1 { return AnyShapeStyle(Color.orange.opacity(0.15)) }
-        return AnyShapeStyle(Color.green.opacity(0.12))
-    }
-
-    private var borderColor: Color {
-        if state.apiKey.isEmpty { return .secondary.opacity(0.3) }
-        if state.balanceError != nil && state.balance == nil { return .red.opacity(0.4) }
-        if let bal = state.balance, bal < 1 { return .orange.opacity(0.4) }
-        return .green.opacity(0.4)
+    /// Status-driven tint for the glass pill.
+    private var tint: Color? {
+        if state.apiKey.isEmpty { return nil }
+        if state.balanceError != nil && state.balance == nil { return .red }
+        if let bal = state.balance, bal < 1 { return .orange }
+        return .green
     }
 
     private var foreground: Color {
@@ -144,9 +137,8 @@ private struct APIKeyBanner: View {
                 .font(.callout)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(.thinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.tertiary))
-        .shadow(radius: 6, y: 2)
+        .glassPill(tint: .orange)
+        .shadow(radius: 8, y: 2)
     }
 }
 

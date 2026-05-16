@@ -62,6 +62,8 @@ struct ModelFormView: View {
                 Label("\(activeCount) running", systemImage: "circle.dotted")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .glassEffect(.regular, in: .capsule)
             }
             Spacer()
             Button {
@@ -70,7 +72,8 @@ struct ModelFormView: View {
                 Label("Run", systemImage: "play.fill")
                     .frame(minWidth: 80)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(state.schema == nil || state.apiKey.isEmpty)
             .help("Submit a new run — fires immediately, no waiting (⌘↩)")
@@ -285,14 +288,14 @@ private struct StringField: View {
                     } label: {
                         Label("Upload file…", systemImage: "arrow.up.doc")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     if currentImageURL != nil {
                         Button {
                             value = .string("")
                         } label: {
                             Label("Clear", systemImage: "xmark")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                     }
                     if isUploading {
                         ProgressView().controlSize(.small)
@@ -408,8 +411,8 @@ private struct ArrayField: View {
                         .buttonStyle(.plain)
                         .help("Remove")
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .glassCard(cornerRadius: 8)
                 }
             }
 
@@ -437,7 +440,7 @@ private struct ArrayField: View {
                                   systemImage: "arrow.up.doc")
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .disabled(isUploading)
                 }
             }

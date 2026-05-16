@@ -2,10 +2,12 @@
 
 Native macOS SwiftUI app for [fal.ai](https://fal.ai). Paste your API key, browse the full model catalog, fill in a form that's generated **from each model's own OpenAPI schema**, and view/save the resulting images, video, audio, or text.
 
-![arch](https://img.shields.io/badge/SwiftUI-macOS%2014%2B-1f6feb) ![status](https://img.shields.io/badge/single--file--build-✓-1f6feb)
+![arch](https://img.shields.io/badge/SwiftUI-macOS%2026%2B-1f6feb) ![design](https://img.shields.io/badge/UI-Liquid%20Glass-9ad) ![status](https://img.shields.io/badge/single--file--build-✓-1f6feb)
 
 ## Features
 
+- **Liquid Glass UI** — uses the macOS 26 `glassEffect()` / `GlassEffectContainer` APIs throughout: status-tinted glass cards in the queue, `.glassProminent` Run button, glass pill for the balance chip, interactive glass thumbnails.
+- **Parallel run queue** — every Run click spawns its own background polling Task and adds a card to the stack on the right. Fire as many as you want without waiting.
 - **API key in Keychain** — paste once in Settings (⌘,). Never written to disk in plain text.
 - **Live model catalog** — pulls from `https://api.fal.ai/v1/models`, with search, category filter, and cursor pagination.
 - **Dynamic form** per model — generated from the model's OpenAPI schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=...`). Handles strings, integers/numbers (with sliders when `minimum`/`maximum` are present), booleans, enums, arrays, nested objects, and `oneOf`/`anyOf`.

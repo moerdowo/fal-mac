@@ -14,7 +14,7 @@ struct QueueView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            Divider().opacity(0.4)
 
             if state.runs.isEmpty {
                 ContentUnavailableViewCompat(
@@ -24,13 +24,18 @@ struct QueueView: View {
                 )
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(state.runs) { run in
-                            RunCardView(run: run)
-                                .id(run.id)
+                    // Group the cards inside a GlassEffectContainer so each
+                    // card's glass interaction (highlights, blur) reads as
+                    // part of a single material plane.
+                    GlassEffectContainer(spacing: 12) {
+                        LazyVStack(spacing: 12) {
+                            ForEach(state.runs) { run in
+                                RunCardView(run: run)
+                                    .id(run.id)
+                            }
                         }
+                        .padding(12)
                     }
-                    .padding(12)
                 }
             }
         }
@@ -53,7 +58,7 @@ struct QueueView: View {
             } label: {
                 Label("Clear", systemImage: "trash")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
             .controlSize(.small)
             .disabled(state.runs.isEmpty)
             .help("Cancel any active runs and remove all cards")
@@ -97,31 +102,26 @@ struct RunCardView: View {
             header
 
             if expanded {
-                Divider().padding(.vertical, 6)
+                Divider().opacity(0.3).padding(.vertical, 6)
                 body(for: run)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 6)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.gray.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(borderColor, lineWidth: borderWidth)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .glassCard(tint: glassTint, cornerRadius: 14)
     }
 
-    private var borderColor: Color {
+    /// Pull a faint tint into the card's glass based on lifecycle status.
+    /// Completed runs use no tint so the media reads cleanly.
+    private var glassTint: Color {
         switch run.status {
-        case .IN_QUEUE: return .blue.opacity(0.35)
-        case .IN_PROGRESS: return .orange.opacity(0.45)
-        case .COMPLETED: return .green.opacity(0.25)
-        case .FAILED: return .red.opacity(0.35)
-        case .UNKNOWN: return Color.gray.opacity(0.25)
+        case .IN_QUEUE: return .blue
+        case .IN_PROGRESS: return .orange
+        case .COMPLETED: return .clear
+        case .FAILED: return .red
+        case .UNKNOWN: return .gray
         }
-    }
-    private var borderWidth: CGFloat {
-        run.status == .IN_PROGRESS ? 1.2 : 0.6
     }
 
     @ViewBuilder
@@ -250,8 +250,8 @@ struct StatusBadge: View {
         }()
         Text(label)
             .font(.caption2.weight(.medium))
-            .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(color.opacity(0.15), in: Capsule())
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .glassEffect(.regular.tint(color.opacity(0.25)), in: .capsule)
             .foregroundStyle(color)
     }
 }
@@ -269,19 +269,18 @@ struct JSONOutputView: View {
                 } label: {
                     Label("Copy JSON", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.small)
             }
             ScrollView(.horizontal) {
                 Text(text)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
-                    .padding(8)
+                    .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 240)
-            .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.2)))
+            .glassCard(cornerRadius: 8)
         }
     }
 }
@@ -350,7 +349,7 @@ struct MediaItemView: View {
     @State private var saveError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: iconName).foregroundStyle(.secondary)
                 Text(item.label?.capitalized ?? item.kind.rawValue.capitalized)
@@ -359,7 +358,7 @@ struct MediaItemView: View {
                 Button { NSWorkspace.shared.open(item.url) } label: {
                     Label("Open", systemImage: "safari")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.small)
                 Button { save() } label: {
                     if isSaving {
@@ -368,7 +367,7 @@ struct MediaItemView: View {
                         Label("Download", systemImage: "arrow.down.circle")
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.small)
                 .disabled(isSaving)
             }
@@ -384,9 +383,8 @@ struct MediaItemView: View {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
         }
-        .padding(8)
-        .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2)))
+        .padding(10)
+        .glassCard(cornerRadius: 10)
     }
 
     private var iconName: String {

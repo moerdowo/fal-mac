@@ -68,7 +68,9 @@ enum FalAPIError: LocalizedError {
 
 // MARK: - Client
 
-final class FalAPI {
+/// HTTP client. Stateless apart from the `URLSession` (which is thread-safe),
+/// so `@unchecked Sendable` is sound under Swift 6 strict concurrency.
+final class FalAPI: @unchecked Sendable {
     static let shared = FalAPI()
 
     private let session: URLSession = {

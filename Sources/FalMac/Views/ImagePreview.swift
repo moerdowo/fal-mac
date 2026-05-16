@@ -25,9 +25,8 @@ struct ImageThumbnailView: View {
                 }
             }
             .frame(width: size, height: size)
-            .background(Color.gray.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(Color.gray.opacity(0.25)))
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
         }
         .buttonStyle(.plain)
         .help("Click to preview")
@@ -62,14 +61,14 @@ struct ImagePreviewSheet: View {
                 } label: {
                     Label("Copy URL", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.small)
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
                     Label("Open", systemImage: "safari")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.small)
                 Button { dismiss() } label: {
                     Image(systemName: "xmark.circle.fill")

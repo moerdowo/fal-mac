@@ -13,8 +13,8 @@ struct ModelListView: View {
                         .textFieldStyle(.plain)
                         .onSubmit { Task { await state.loadModels() } }
                 }
-                .padding(8)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .glassEffect(.regular, in: .capsule)
 
                 if !state.knownCategories.isEmpty {
                     Picker("Category", selection: Binding(
