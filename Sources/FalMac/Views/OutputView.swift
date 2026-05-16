@@ -524,10 +524,10 @@ struct MediaItemView: View {
                 .controlSize(.small)
 
                 // Pipeline: send this URL into another model's URL-shaped
-                // input. Menu lists recents + favorites first, then a
-                // "Choose…" option falling through to the full catalog.
+                // input. Menu only lists models whose category accepts
+                // this output kind as input.
                 if item.kind == .image || item.kind == .video || item.kind == .audio {
-                    SendToModelMenu(url: item.url)
+                    SendToModelMenu(url: item.url, kind: item.kind)
                 }
 
                 // Save to Gallery — manual counterpart to the auto-download
@@ -634,34 +634,76 @@ struct MediaItemView: View {
     }
 }
 
-/// Menu for sending an output URL into another model as input. Lists
-/// recents + favorites for one-click chaining, plus a "From catalog…"
-/// submenu for the full list.
+/// Menu for sending an output URL into another model as input. Filters
+/// recents, favorites, and the catalog to models whose category accepts
+/// the *current output kind* as input (e.g. an image output only offers
+/// image-to-image / image-to-video / image-to-3d models). The catalog
+/// list is fetched lazily on first menu render.
 struct SendToModelMenu: View {
     let url: URL
+    let kind: MediaItem.Kind
     @EnvironmentObject var state: AppState
+
+    private var acceptedCategories: Set<String> {
+        Set(AppState.compatibleInputCategories(for: kind))
+    }
+
+    private func isCompatible(_ model: FalModelSummary) -> Bool {
+        guard let cat = model.category else { return false }
+        return acceptedCategories.contains(cat)
+    }
+
+    private var compatibleRecents: [FalModelSummary] {
+        state.recents.filter(isCompatible)
+    }
+
+    private var compatibleFavorites: [FalModelSummary] {
+        Array(state.favorites.values)
+            .filter(isCompatible)
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    private var compatibleCatalog: [FalModelSummary] {
+        state.compatibleModelsCache[kind.rawValue] ?? []
+    }
+
+    private var isLoading: Bool {
+        state.compatibleModelsLoading.contains(kind.rawValue)
+            && compatibleCatalog.isEmpty
+    }
+
+    private var anyAvailable: Bool {
+        !(compatibleRecents.isEmpty && compatibleFavorites.isEmpty && compatibleCatalog.isEmpty)
+    }
 
     var body: some View {
         Menu {
-            if !state.recents.isEmpty {
+            if !compatibleRecents.isEmpty {
                 Section("Recents") {
-                    ForEach(state.recents) { m in
+                    ForEach(compatibleRecents) { m in
                         Button(m.displayName) { send(to: m) }
                     }
                 }
             }
-            if !state.favorites.isEmpty {
+            if !compatibleFavorites.isEmpty {
                 Section("Favorites") {
-                    ForEach(Array(state.favorites.values).sorted(by: { $0.displayName < $1.displayName })) { m in
+                    ForEach(compatibleFavorites) { m in
                         Button(m.displayName) { send(to: m) }
                     }
                 }
             }
-            if !state.allModels.isEmpty {
-                Section("From catalog") {
-                    ForEach(state.allModels.prefix(20)) { m in
+            if !compatibleCatalog.isEmpty {
+                Section("\(kindDescription) input models") {
+                    ForEach(compatibleCatalog.prefix(40)) { m in
                         Button(m.displayName) { send(to: m) }
                     }
+                }
+            }
+            if !anyAvailable {
+                if isLoading {
+                    Text("Loading compatible models…").foregroundStyle(.secondary)
+                } else {
+                    Text("No models accept \(kind.rawValue) as input").foregroundStyle(.secondary)
                 }
             }
         } label: {
@@ -670,11 +712,30 @@ struct SendToModelMenu: View {
         .menuStyle(.button)
         .buttonStyle(.glass)
         .controlSize(.small)
-        .help("Send this URL into another model's URL-shaped input field")
+        .help("Send this URL into another \(kindDescription)-input model")
+        .task(id: kind.rawValue) {
+            await state.fetchCompatibleModels(for: kind)
+        }
+    }
+
+    private var kindDescription: String {
+        switch kind {
+        case .image: return "image"
+        case .video: return "video"
+        case .audio: return "audio"
+        case .file: return "file"
+        }
     }
 
     private func send(to model: FalModelSummary) {
-        Task { await state.sendToModel(url, modelEndpointId: model.endpointId, modelDisplayName: model.displayName) }
+        Task {
+            await state.sendToModel(
+                url,
+                kind: kind,
+                modelEndpointId: model.endpointId,
+                modelDisplayName: model.displayName
+            )
+        }
     }
 }
 

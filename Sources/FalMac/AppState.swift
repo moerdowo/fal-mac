@@ -242,8 +242,14 @@ final class AppState: ObservableObject {
 
     /// Pipeline-style "send this URL to another model". Switches the
     /// selected model and, once its schema loads, drops the URL into the
-    /// first URL-shaped field (e.g. `image_url`).
-    func sendToModel(_ url: URL, modelEndpointId: String, modelDisplayName: String) async {
+    /// best-matching input field. Preference order:
+    ///   1. Single-string URL fields whose name matches the output kind
+    ///      (image_url for an image, audio_url for audio, …).
+    ///   2. Array-of-string URL fields whose name matches the kind
+    ///      (image_urls, audio_urls). Appended, not replaced, so the
+    ///      user can chain multiple outputs into the same array.
+    ///   3. Any URL-shaped string field (best-effort fallback).
+    func sendToModel(_ url: URL, kind: MediaItem.Kind, modelEndpointId: String, modelDisplayName: String) async {
         let summary = FalModelSummary(
             endpointId: modelEndpointId,
             displayName: modelDisplayName,
@@ -253,25 +259,67 @@ final class AppState: ObservableObject {
             status: nil
         )
         await selectModel(summary)
-        // Wait briefly for schema load if needed.
+        // Wait briefly for the schema to load if needed.
         var spins = 0
         while schema == nil, spins < 40 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             spins += 1
         }
         guard let schema else { return }
-        // Find the first URL-shaped property.
-        let urlField = schema.properties.first { prop in
-            let n = prop.name.lowercased()
-            return prop.format == "uri"
-                || n.hasSuffix("_url")
-                || ["image", "audio", "video", "input_image", "init_image",
-                    "mask", "mask_image", "reference_image", "source_image",
-                    "control_image", "ip_adapter_image", "face_image"].contains(n)
+
+        let kindTokens = Self.kindTokens(for: kind)
+
+        // 1. Best match: single-string URL field for this exact kind.
+        if let prop = schema.properties.first(where: { Self.isKindMatchedURLField($0, kindTokens: kindTokens, allowArray: false) }) {
+            formValues[prop.name] = .string(url.absoluteString)
+            return
         }
-        if let urlField {
-            formValues[urlField.name] = .string(url.absoluteString)
+        // 2. Array-of-strings whose name matches the kind — append.
+        if let prop = schema.properties.first(where: { Self.isKindMatchedURLField($0, kindTokens: kindTokens, allowArray: true) }) {
+            var current: [JSONValue]
+            if case .array(let existing) = formValues[prop.name] ?? .null { current = existing }
+            else { current = [] }
+            current.append(.string(url.absoluteString))
+            formValues[prop.name] = .array(current)
+            return
         }
+        // 3. Generic fallback — any URL-shaped string field.
+        if let prop = schema.properties.first(where: { Self.isAnyURLField($0) }) {
+            formValues[prop.name] = .string(url.absoluteString)
+        }
+    }
+
+    /// Tokens that identify a field as matching a given output kind.
+    private static func kindTokens(for kind: MediaItem.Kind) -> [String] {
+        switch kind {
+        case .image: return ["image", "mask", "photo", "face", "reference", "init", "source", "control"]
+        case .video: return ["video"]
+        case .audio: return ["audio", "speech", "sound"]
+        case .file:  return []
+        }
+    }
+
+    /// Is `node` a string-typed URL field whose name contains any of the
+    /// kind tokens? When `allowArray` is true, also accepts arrays whose
+    /// items are strings (e.g. `image_urls`).
+    private static func isKindMatchedURLField(
+        _ node: SchemaNode, kindTokens: [String], allowArray: Bool
+    ) -> Bool {
+        let n = node.name.lowercased()
+        guard kindTokens.contains(where: { n.contains($0) }) else { return false }
+        if node.type == .string { return true }
+        if allowArray, node.type == .array, node.items.first?.type == .string { return true }
+        return false
+    }
+
+    private static func isAnyURLField(_ node: SchemaNode) -> Bool {
+        if node.format == "uri" { return true }
+        let n = node.name.lowercased()
+        if n.hasSuffix("_url") { return true }
+        if ["image", "audio", "video", "input_image", "init_image",
+            "mask", "mask_image", "reference_image", "source_image",
+            "control_image", "ip_adapter_image", "face_image"].contains(n) { return true }
+        return false
     }
 
     func applyPrompt(_ prompt: SavedPrompt) {
@@ -335,6 +383,57 @@ final class AppState: ObservableObject {
         ("Text / LLM", ["llm"]),
         ("Vision",    ["vision"]),
     ]
+
+    // MARK: - Compatible-models cache (used by "Use as input" menu)
+
+    /// Lazy-fetched lookup table from output kind (`image` / `video` /
+    /// `audio`) to fal models that *accept that kind as input*. Populated
+    /// by `fetchCompatibleModels(for:)` the first time a Send-to-Model
+    /// menu is rendered for that kind. Keyed by raw kind string.
+    @Published private(set) var compatibleModelsCache: [String: [FalModelSummary]] = [:]
+    @Published private(set) var compatibleModelsLoading: Set<String> = []
+
+    /// Categories of fal models that accept a given output media type as
+    /// input. Drawn from the catalog metadata pattern `<from>-to-<to>`.
+    /// File outputs aren't supported — fal has no obvious "file as input"
+    /// category, and the menu is hidden for them.
+    static func compatibleInputCategories(for kind: MediaItem.Kind) -> [String] {
+        switch kind {
+        case .image: return ["image-to-image", "image-to-video", "image-to-3d"]
+        case .video: return ["video-to-video"]
+        case .audio: return ["speech-to-text"]
+        case .file:  return []
+        }
+    }
+
+    /// Fetch + cache models whose input category matches `kind`. Idempotent:
+    /// a second call for the same kind is a no-op while the first is in
+    /// flight, and skips entirely once the cache is populated.
+    func fetchCompatibleModels(for kind: MediaItem.Kind) async {
+        let key = kind.rawValue
+        if compatibleModelsCache[key] != nil { return }
+        if compatibleModelsLoading.contains(key) { return }
+        let cats = Self.compatibleInputCategories(for: kind)
+        guard !cats.isEmpty else { return }
+        compatibleModelsLoading.insert(key)
+        defer { compatibleModelsLoading.remove(key) }
+
+        var seen = Set<String>()
+        var combined: [FalModelSummary] = []
+        for cat in cats {
+            do {
+                let page = try await FalAPI.shared.listModels(query: nil, category: cat, cursor: nil, limit: 50)
+                for m in page.models where seen.insert(m.endpointId).inserted {
+                    combined.append(m)
+                }
+            } catch {
+                // Best-effort: a single category failure shouldn't poison
+                // the rest. We just present whatever we got.
+            }
+        }
+        combined.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        compatibleModelsCache[key] = combined
+    }
 
     /// Resolve the selected filter name to the list of API categories to
     /// request. Returns nil for "all categories" (no filter at all).
