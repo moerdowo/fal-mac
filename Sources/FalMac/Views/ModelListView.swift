@@ -16,19 +16,22 @@ struct ModelListView: View {
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .glassEffect(.regular, in: .capsule)
 
-                if !state.knownCategories.isEmpty {
-                    Picker("Category", selection: Binding(
-                        get: { state.selectedCategory ?? "" },
-                        set: { newVal in
-                            state.selectedCategory = newVal.isEmpty ? nil : newVal
-                            Task { await state.loadModels() }
-                        })) {
-                            Text("All categories").tag("")
-                            ForEach(state.knownCategories, id: \.self) { Text($0).tag($0) }
+                // Curated top-level filters. "Audio" / "Image" / "Video"
+                // fan out to multiple fal categories and merge results.
+                Picker("Category", selection: Binding(
+                    get: { state.selectedCategory ?? "" },
+                    set: { newVal in
+                        state.selectedCategory = newVal.isEmpty ? nil : newVal
+                        Task { await state.loadModels() }
+                    })) {
+                        Text("All categories").tag("")
+                        Divider()
+                        ForEach(AppState.categoryFilters, id: \.name) { filter in
+                            Text(filter.name).tag(filter.name)
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
 

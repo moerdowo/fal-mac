@@ -73,10 +73,29 @@ final class AppState: ObservableObject {
     @Published var balanceLoading = false
     @Published var balanceError: String?
 
-    /// Set of known categories surfaced from already-loaded models.
-    var knownCategories: [String] {
-        let set = Set(allModels.compactMap { $0.category })
-        return Array(set).sorted()
+    /// Curated top-level filters surfaced in the sidebar picker. Each entry
+    /// maps a friendly name to one or more concrete fal `category` strings
+    /// (fal's API only accepts a single category per request, so "Audio"
+    /// fans out to three calls and the results are merged client-side).
+    static let categoryFilters: [(name: String, categories: [String])] = [
+        ("Image",     ["text-to-image", "image-to-image"]),
+        ("Video",     ["text-to-video", "image-to-video", "video-to-video"]),
+        ("Audio",     ["text-to-audio", "text-to-speech", "speech-to-text"]),
+        ("3D",        ["image-to-3d"]),
+        ("Text / LLM", ["llm"]),
+        ("Vision",    ["vision"]),
+    ]
+
+    /// Resolve the selected filter name to the list of API categories to
+    /// request. Returns nil for "all categories" (no filter at all).
+    private func apiCategoriesForCurrentFilter() -> [String]? {
+        guard let name = selectedCategory, !name.isEmpty else { return nil }
+        if let match = Self.categoryFilters.first(where: { $0.name == name }) {
+            return match.categories
+        }
+        // Allow raw fal category strings too (forward-compat with anything
+        // that isn't in the curated list).
+        return [name]
     }
 
     // MARK: - API key
@@ -117,33 +136,58 @@ final class AppState: ObservableObject {
     // MARK: - Model catalog
 
     /// Replace the catalog with a fresh first page.
+    /// Grouped filters (e.g. "Audio") fan out to multiple sequential API
+    /// calls — fal only accepts one `category` per request — and we merge +
+    /// de-dupe by endpoint_id client-side. Pagination is disabled for these
+    /// composite views since cursors are per-category.
     func loadModels() async {
         modelsLoading = true
         modelsError = nil
         defer { modelsLoading = false }
         do {
-            let page = try await FalAPI.shared.listModels(
-                query: searchText.isEmpty ? nil : searchText,
-                category: selectedCategory,
-                cursor: nil
-            )
-            allModels = page.models
-            modelsNextCursor = page.nextCursor
-            modelsHasMore = page.hasMore
+            let cats = apiCategoriesForCurrentFilter()
+            let q = searchText.isEmpty ? nil : searchText
+
+            if let cats, cats.count > 1 {
+                var combined: [FalModelSummary] = []
+                var seen = Set<String>()
+                for cat in cats {
+                    let page = try await FalAPI.shared.listModels(
+                        query: q, category: cat, cursor: nil, limit: 100
+                    )
+                    for m in page.models where seen.insert(m.endpointId).inserted {
+                        combined.append(m)
+                    }
+                }
+                allModels = combined.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+                modelsNextCursor = nil
+                modelsHasMore = false
+            } else {
+                let page = try await FalAPI.shared.listModels(
+                    query: q, category: cats?.first, cursor: nil
+                )
+                allModels = page.models
+                modelsNextCursor = page.nextCursor
+                modelsHasMore = page.hasMore
+            }
         } catch {
             modelsError = error.localizedDescription
         }
     }
 
-    /// Fetch the next cursor page and append.
+    /// Fetch the next cursor page and append. Only meaningful for the
+    /// all-categories view and single-category filters — grouped filters
+    /// pre-merge all categories so there's no cursor.
     func loadMoreModels() async {
         guard let cursor = modelsNextCursor, !modelsLoading else { return }
+        let cats = apiCategoriesForCurrentFilter()
+        guard cats?.count ?? 1 <= 1 else { return }
         modelsLoading = true
         defer { modelsLoading = false }
         do {
             let page = try await FalAPI.shared.listModels(
                 query: searchText.isEmpty ? nil : searchText,
-                category: selectedCategory,
+                category: cats?.first,
                 cursor: cursor
             )
             allModels.append(contentsOf: page.models)
