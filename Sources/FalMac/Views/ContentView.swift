@@ -35,8 +35,13 @@ struct ContentView: View {
 private struct Toolbar: ToolbarContent {
     @EnvironmentObject var state: AppState
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
+        // Balance lives on the leading edge — it's a status indicator, not
+        // an action — so the full toolbar gap separates it from the reload
+        // button on the trailing edge.
+        ToolbarItem(placement: .navigation) {
             BalanceChip()
+        }
+        ToolbarItem(placement: .primaryAction) {
             Button {
                 Task {
                     await state.loadModels()
