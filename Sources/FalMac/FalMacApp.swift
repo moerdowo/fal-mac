@@ -9,6 +9,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Show the rainbow F in the Dock. The asset catalog handles the
+        // Finder / Get-Info icon for Xcode builds; this covers `swift run`
+        // where Assets.car may not be compiled into the executable.
+        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
+           let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        } else if let icon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = icon
+        }
+
         // Ensure the first window becomes key so keyboard input is routed.
         DispatchQueue.main.async {
             NSApp.windows.first?.makeKeyAndOrderFront(nil)

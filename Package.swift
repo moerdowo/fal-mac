@@ -10,7 +10,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "FalMac",
-            path: "Sources/FalMac"
+            path: "Sources/FalMac",
+            resources: [
+                .process("Resources/Assets.xcassets"),
+                .process("Resources/AppIcon.png")
+            ]
         )
     ]
 )
