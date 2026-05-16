@@ -48,6 +48,33 @@ struct FalStatusResponse: Codable {
     }
 }
 
+/// Returns true for errors that are worth retrying mid-poll (server hiccups,
+/// transient TLS drops, etc.). Permanent errors (4xx auth, decoding) should
+/// not be retried.
+func isTransient(_ error: Error) -> Bool {
+    if case FalAPIError.http(let code, _) = error {
+        return code >= 500 || code == 408 || code == 429
+    }
+    let ns = error as NSError
+    // URLSession network errors all live in NSURLErrorDomain.
+    if ns.domain == NSURLErrorDomain {
+        switch ns.code {
+        case NSURLErrorTimedOut,
+             NSURLErrorNotConnectedToInternet,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorDNSLookupFailed,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorCannotFindHost,
+             NSURLErrorResourceUnavailable,
+             NSURLErrorBadServerResponse,
+             NSURLErrorDataNotAllowed:
+            return true
+        default: return false
+        }
+    }
+    return false
+}
+
 // MARK: - Errors
 
 enum FalAPIError: LocalizedError {

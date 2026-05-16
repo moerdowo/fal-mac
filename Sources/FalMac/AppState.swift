@@ -21,6 +21,11 @@ struct RunRecord: Identifiable, Equatable {
     var finishedAt: Date?
     var error: String?
     var logs: [String] = []
+    /// Position in fal's queue while `status == .IN_QUEUE`. Nil otherwise.
+    var queuePosition: Int?
+    /// Counter for transient polling errors. Surfaced in the UI so the user
+    /// can see we're retrying rather than silently stuck.
+    var transientRetries: Int = 0
 }
 
 @MainActor
@@ -269,28 +274,92 @@ final class AppState: ObservableObject {
                 return
             }
 
+            // Adaptive polling cadence — start tight so quick image jobs return
+            // fast, then back off so a 2-minute video job doesn't hammer the
+            // status endpoint ~80 times.
+            //   0–5s elapsed  → 1.0s
+            //   5–30s         → 2.0s
+            //   30–90s        → 3.5s
+            //   90s+          → 5.0s
+            let pollStart = Date()
+            func pollInterval() -> UInt64 {
+                let elapsed = Date().timeIntervalSince(pollStart)
+                let seconds: Double
+                if elapsed < 5 { seconds = 1.0 }
+                else if elapsed < 30 { seconds = 2.0 }
+                else if elapsed < 90 { seconds = 3.5 }
+                else { seconds = 5.0 }
+                return UInt64(seconds * 1_000_000_000)
+            }
+
+            // Tolerate up to 5 consecutive transient errors before giving up.
+            // Anything terminal (auth, decoding) still propagates immediately.
+            let maxTransientRetries = 5
+            var consecutiveTransient = 0
+
             poll: while !Task.isCancelled {
-                try await Task.sleep(nanoseconds: 1_500_000_000)
-                let status = try await FalAPI.shared.status(at: statusURL)
+                try await Task.sleep(nanoseconds: pollInterval())
+
+                let status: FalStatusResponse
+                do {
+                    status = try await FalAPI.shared.status(at: statusURL)
+                    consecutiveTransient = 0
+                    updateRun(runId) { $0.transientRetries = 0 }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    if isTransient(error), consecutiveTransient < maxTransientRetries {
+                        consecutiveTransient += 1
+                        updateRun(runId) { $0.transientRetries = consecutiveTransient }
+                        // Brief backoff before next attempt — separate from
+                        // the regular cadence above.
+                        try await Task.sleep(nanoseconds: UInt64(Double(consecutiveTransient) * 0.5 * 1e9))
+                        continue
+                    }
+                    throw error
+                }
+
                 updateRun(runId) {
                     $0.status = status.status
+                    $0.queuePosition = (status.status == .IN_QUEUE) ? status.queue_position : nil
                     if let logs = status.logs { $0.logs = logs.map { $0.message } }
                 }
+
                 switch status.status {
                 case .COMPLETED:
-                    let result = try await FalAPI.shared.result(at: responseURL)
-                    updateRun(runId) {
-                        $0.output = result
-                        $0.finishedAt = Date()
+                    // Same retry treatment for the final result fetch — losing
+                    // the run on a single blip here is the worst case.
+                    var resultAttempts = 0
+                    while true {
+                        do {
+                            let result = try await FalAPI.shared.result(at: responseURL)
+                            updateRun(runId) {
+                                $0.output = result
+                                $0.finishedAt = Date()
+                            }
+                            break poll
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            if isTransient(error), resultAttempts < maxTransientRetries {
+                                resultAttempts += 1
+                                try await Task.sleep(nanoseconds: UInt64(Double(resultAttempts) * 0.5 * 1e9))
+                                continue
+                            }
+                            throw error
+                        }
                     }
-                    break poll
                 case .FAILED:
                     updateRun(runId) {
                         $0.error = "Job failed."
                         $0.finishedAt = Date()
                     }
                     break poll
-                default:
+                case .IN_QUEUE, .IN_PROGRESS:
+                    continue
+                case .UNKNOWN:
+                    // Treat unknown status as in-progress rather than a bug —
+                    // fal may add new states (e.g. STREAMING) we don't track.
                     continue
                 }
             }

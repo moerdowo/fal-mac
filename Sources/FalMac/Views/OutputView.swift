@@ -139,6 +139,12 @@ struct RunCardView: View {
                 HStack(spacing: 8) {
                     Text(run.displayName).font(.headline).lineLimit(1)
                     StatusBadge(status: run.status)
+                    if run.transientRetries > 0, isActive {
+                        Label("Retrying", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.orange)
+                            .help("Transient network error — retry \(run.transientRetries) of 5")
+                    }
                 }
                 HStack(spacing: 6) {
                     Text(run.endpointId)
@@ -155,6 +161,10 @@ struct RunCardView: View {
                             .truncationMode(.middle)
                             .textSelection(.enabled)
                     }
+                    Text("·").foregroundStyle(.secondary)
+                    ElapsedTimeText(start: run.startedAt, end: run.finishedAt)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -223,14 +233,70 @@ struct RunCardView: View {
                     .font(.caption)
                 }
             } else if isActive {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(run.status == .IN_QUEUE ? "Queued…" : "Generating…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                ActiveStatusRow(run: run)
             }
         }
+    }
+}
+
+/// What the user sees while a run is in queue or running. Surfaces fal's
+/// `queue_position` so a queued run doesn't look stuck, and the most recent
+/// log line so a long video gen shows real progress (e.g. "Sampling step 12/30").
+private struct ActiveStatusRow: View {
+    let run: RunRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(headline)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let tail = run.logs.last, run.status == .IN_PROGRESS {
+                Text(tail)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var headline: String {
+        switch run.status {
+        case .IN_QUEUE:
+            if let pos = run.queuePosition { return "Queued · position \(pos)" }
+            return "Queued…"
+        case .IN_PROGRESS: return "Generating…"
+        default: return "Working…"
+        }
+    }
+}
+
+/// Live-updating elapsed-time label. Uses `TimelineView` so we don't have to
+/// drive a 1s timer manually — it self-paces while visible and shows a frozen
+/// final figure once `end` is set.
+private struct ElapsedTimeText: View {
+    let start: Date
+    let end: Date?
+
+    var body: some View {
+        if let end {
+            Text(Self.format(end.timeIntervalSince(start)))
+        } else {
+            TimelineView(.periodic(from: start, by: 1.0)) { ctx in
+                Text(Self.format(ctx.date.timeIntervalSince(start)))
+            }
+        }
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let m = total / 60
+        let s = total % 60
+        return m > 0 ? String(format: "%dm %02ds", m, s) : "\(s)s"
     }
 }
 
