@@ -11,6 +11,17 @@ struct GalleryView: View {
     @State private var search: String = ""
     @State private var sort: SortKind = .newest
 
+    // Multi-select state — ⌘-click toggles a tile, ⇧-click selects a range,
+    // click anywhere clears unless ⌘/⇧ is held. Lightbox uses the same
+    // index pointer when present.
+    @State private var selection: Set<UUID> = []
+    @State private var lightbox: LightboxState?
+
+    struct LightboxState: Identifiable {
+        let id = UUID()
+        var index: Int
+    }
+
     enum FilterKind: String, CaseIterable, Identifiable {
         case all, image, video, audio, file
         var id: String { rawValue }
@@ -65,11 +76,87 @@ struct GalleryView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if !selection.isEmpty {
+                selectionBar
+            }
             Divider().opacity(0.4)
             content
         }
         .navigationTitle("Gallery")
         .frame(minWidth: 720, minHeight: 480)
+        // ⎋ clears selection if anything's selected.
+        .onExitCommand {
+            if !selection.isEmpty { selection.removeAll() }
+        }
+        .sheet(item: $lightbox) { state in
+            LightboxView(
+                items: filtered,
+                startIndex: state.index
+            )
+        }
+    }
+
+    // MARK: - Selection actions
+
+    @ViewBuilder
+    private var selectionBar: some View {
+        HStack(spacing: 10) {
+            Text("\(selection.count) selected")
+                .font(.callout.weight(.medium))
+            Button("Clear") { selection.removeAll() }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+            Spacer()
+            Button {
+                openSelection()
+            } label: {
+                Label("Open", systemImage: "arrow.up.right.square")
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            Button {
+                revealSelection()
+            } label: {
+                Label("Reveal in Finder", systemImage: "folder")
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            Button(role: .destructive) {
+                deleteSelection()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .keyboardShortcut(.delete, modifiers: [])
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial)
+    }
+
+    private func openSelection() {
+        for id in selection {
+            if let item = store.items.first(where: { $0.id == id }) {
+                NSWorkspace.shared.open(item.localURL(in: store.folder))
+            }
+        }
+    }
+    private func revealSelection() {
+        let urls = selection.compactMap { id -> URL? in
+            store.items.first(where: { $0.id == id })?.localURL(in: store.folder)
+        }
+        if !urls.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        }
+    }
+    private func deleteSelection() {
+        for id in selection {
+            if let item = store.items.first(where: { $0.id == id }) {
+                store.remove(item)
+            }
+        }
+        selection.removeAll()
     }
 
     // MARK: - Toolbar
@@ -160,13 +247,43 @@ struct GalleryView: View {
                     columns: [GridItem(.adaptive(minimum: 200, maximum: 280), spacing: 14)],
                     spacing: 14
                 ) {
-                    ForEach(filtered) { item in
-                        GalleryTileView(item: item)
+                    ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, item in
+                        GalleryTileView(
+                            item: item,
+                            isSelected: selection.contains(item.id),
+                            onPrimaryClick: { handlePrimaryClick(item: item, index: idx) },
+                            onLightbox: { lightbox = LightboxState(index: idx) }
+                        )
                     }
                 }
                 .padding(14)
             }
         }
+    }
+
+    /// Click handlers: ⌘-click toggles, ⇧-click range-selects, plain click
+    /// either clears+selects (when something else is selected) or opens
+    /// the item's modal preview.
+    private func handlePrimaryClick(item: GalleryItem, index: Int) {
+        let mods = NSEvent.modifierFlags
+        if mods.contains(.command) {
+            if selection.contains(item.id) { selection.remove(item.id) }
+            else { selection.insert(item.id) }
+            return
+        }
+        if mods.contains(.shift), let anchor = filtered.firstIndex(where: { selection.contains($0.id) }) {
+            let lo = min(anchor, index)
+            let hi = max(anchor, index)
+            for i in lo...hi { selection.insert(filtered[i].id) }
+            return
+        }
+        if !selection.isEmpty {
+            // If we're in select mode, plain click resets to just this one.
+            selection = [item.id]
+            return
+        }
+        // No selection — open the preview / lightbox.
+        lightbox = LightboxState(index: index)
     }
 }
 
@@ -174,21 +291,17 @@ struct GalleryView: View {
 
 private struct GalleryTileView: View {
     let item: GalleryItem
+    var isSelected: Bool = false
+    var onPrimaryClick: () -> Void = {}
+    var onLightbox: () -> Void = {}
     @ObservedObject private var store: GalleryStore = .shared
-    @State private var showImagePreview = false
-    @State private var showVideoPreview = false
     @State private var videoPoster: NSImage?
 
     private var localURL: URL { item.localURL(in: store.folder) }
 
     var body: some View {
         Button {
-            switch item.kind {
-            case .image: showImagePreview = true
-            case .video: showVideoPreview = true
-            case .audio, .file:
-                NSWorkspace.shared.open(localURL)
-            }
+            onPrimaryClick()
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail
@@ -223,6 +336,12 @@ private struct GalleryTileView: View {
         }
         .buttonStyle(.plain)
         .glassCard(cornerRadius: 12)
+        // Selection ring on top of the glass card.
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.accentColor, lineWidth: isSelected ? 2.5 : 0)
+                .padding(-1)
+        )
         // Drag tile out to Finder / Mail / Messages / AirDrop. NSItemProvider
         // with the on-disk file URL — the destination app reads the bytes
         // directly from disk, no upload needed.
@@ -230,12 +349,6 @@ private struct GalleryTileView: View {
             NSItemProvider(contentsOf: localURL) ?? NSItemProvider()
         }
         .contextMenu { contextMenu }
-        .sheet(isPresented: $showImagePreview) {
-            ImagePreviewSheet(url: localURL)
-        }
-        .sheet(isPresented: $showVideoPreview) {
-            VideoPreviewSheet(url: localURL)
-        }
     }
 
     @ViewBuilder
@@ -341,3 +454,169 @@ private struct GalleryTileView: View {
     }
 }
 
+
+// MARK: - Lightbox
+
+/// Fullscreen-ish viewer for stepping through gallery items with ← / →.
+/// Sized to the screen (95%), images shown at fit; videos play with full
+/// AVPlayerView controls; audio plays inline; files just link out.
+struct LightboxView: View {
+    let items: [GalleryItem]
+    let startIndex: Int
+
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store: GalleryStore = .shared
+    @State private var index: Int = 0
+    @State private var image: NSImage?
+    @State private var loadError: String?
+
+    init(items: [GalleryItem], startIndex: Int) {
+        self.items = items
+        self.startIndex = startIndex
+        _index = State(initialValue: startIndex)
+    }
+
+    private var current: GalleryItem? {
+        guard !items.isEmpty, index >= 0, index < items.count else { return nil }
+        return items[index]
+    }
+    private var currentURL: URL? {
+        current.map { $0.localURL(in: store.folder) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            Divider().opacity(0.3)
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+        }
+        .frame(width: screenSize.width, height: screenSize.height)
+        .task(id: currentURL) { await load() }
+        // Arrow keys to navigate. Hidden buttons keep the shortcuts alive
+        // without taking visible space.
+        .background(
+            VStack {
+                Button("Prev") { step(-1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                Button("Next") { step(1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+        )
+    }
+
+    private var screenSize: CGSize {
+        let v = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.size
+            ?? CGSize(width: 1440, height: 900)
+        return CGSize(width: v.width * 0.95, height: v.height * 0.95)
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("\(index + 1) / \(items.count)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            if let item = current {
+                Text(item.modelDisplayName).font(.caption.weight(.medium))
+                if let p = item.prompt, !p.isEmpty {
+                    Text("· \(p)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer()
+            Button { step(-1) } label: { Image(systemName: "chevron.left") }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(index <= 0)
+            Button { step(1) } label: { Image(systemName: "chevron.right") }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(index >= items.count - 1)
+            if let item = current {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.localURL(in: store.folder)])
+                } label: {
+                    Label("Reveal", systemImage: "folder")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+            }
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let item = current, let url = currentURL {
+            switch item.kind {
+            case .image:
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                } else if let loadError {
+                    VStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+                        Text(loadError).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    ProgressView()
+                }
+            case .video:
+                AVPlayerHost(url: url, showsControls: true, showsFullScreenToggle: true)
+            case .audio:
+                VStack(spacing: 12) {
+                    Image(systemName: "waveform").font(.system(size: 80))
+                        .foregroundStyle(.secondary)
+                    AVPlayerHost(url: url, showsControls: true, showsFullScreenToggle: false)
+                        .frame(height: 60)
+                        .padding(.horizontal, 60)
+                }
+            case .file:
+                Link(destination: url) {
+                    Text(item.localPath)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+    }
+
+    private func step(_ delta: Int) {
+        let next = index + delta
+        guard next >= 0, next < items.count else { return }
+        image = nil
+        loadError = nil
+        index = next
+    }
+
+    private func load() async {
+        guard let item = current else { return }
+        let url = item.localURL(in: store.folder)
+        if item.kind == .image {
+            if let img = NSImage(contentsOf: url) {
+                await MainActor.run { self.image = img }
+            } else {
+                await MainActor.run { self.loadError = "Couldn't decode image" }
+            }
+        }
+    }
+}
