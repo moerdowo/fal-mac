@@ -421,6 +421,12 @@ struct MediaItemView: View {
     @EnvironmentObject var state: AppState
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var showImagePreview = false
+    @State private var showVideoPreview = false
+
+    private var canExpand: Bool {
+        item.kind == .image || item.kind == .video
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -429,6 +435,20 @@ struct MediaItemView: View {
                 Text(item.label?.capitalized ?? item.kind.rawValue.capitalized)
                     .font(.subheadline.weight(.medium))
                 Spacer()
+                if canExpand {
+                    Button {
+                        switch item.kind {
+                        case .image: showImagePreview = true
+                        case .video: showVideoPreview = true
+                        default: break
+                        }
+                    } label: {
+                        Label("Expand", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .help("Open in larger preview")
+                }
                 Button { NSWorkspace.shared.open(item.url) } label: {
                     Label("Open", systemImage: "safari")
                 }
@@ -459,6 +479,12 @@ struct MediaItemView: View {
         }
         .padding(10)
         .glassCard(cornerRadius: 10)
+        .sheet(isPresented: $showImagePreview) {
+            ImagePreviewSheet(url: item.url)
+        }
+        .sheet(isPresented: $showVideoPreview) {
+            VideoPreviewSheet(url: item.url)
+        }
     }
 
     private var iconName: String {

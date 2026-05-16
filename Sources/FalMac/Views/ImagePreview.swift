@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 /// A clickable async-loaded image thumbnail. Tap opens a modal preview sheet.
 struct ImageThumbnailView: View {
@@ -202,4 +203,128 @@ struct ImagePreviewSheet: View {
     }
 
     private func pixelInt(_ v: CGFloat) -> Int { Int(v.rounded()) }
+}
+
+// MARK: - Video preview sheet
+
+/// Modal video player. Resizes to the asset's natural display dimensions
+/// (rounded up to fit the screen, with a 16:9 default while metadata is
+/// loading). Uses `AVPlayerHost` so we keep the AVKit-direct render path
+/// that survives macOS 26's `VideoPlayer` demangle bug.
+struct VideoPreviewSheet: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var naturalSize: CGSize?
+    @State private var sheetSize: CGSize = CGSize(width: 960, height: 600)
+
+    private let chromeHeight: CGFloat = 52
+    private let screenMargin: CGFloat = 80
+    private let minSheet: CGSize = CGSize(width: 640, height: 420)
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            Divider()
+
+            AVPlayerHost(url: url, showsControls: true, showsFullScreenToggle: true)
+                .background(Color.black)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: sheetSize.width, height: sheetSize.height)
+        .task(id: url) {
+            await loadAndResize()
+        }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "film").foregroundStyle(.secondary)
+            Text(url.lastPathComponent)
+                .font(.caption.monospaced())
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            if let s = naturalSize {
+                Text("·").foregroundStyle(.secondary)
+                Text("\(Int(s.width.rounded())) × \(Int(s.height.rounded()))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            } label: {
+                Label("Copy URL", systemImage: "doc.on.doc")
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label("Open", systemImage: "safari")
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close (Esc)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(height: chromeHeight)
+    }
+
+    /// Use AVAsset's modern async API to read the first video track's
+    /// natural size + preferred transform, then resize the sheet to fit.
+    /// If the asset can't be inspected we keep the default 16:9 frame.
+    private func loadAndResize() async {
+        let asset = AVURLAsset(url: url)
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let track = tracks.first else { return }
+            // Serialize the two property loads — they share `track`, and
+            // Swift 6 strict concurrency forbids passing the same
+            // non-sendable reference into two concurrent `async let`s.
+            let size = try await track.load(.naturalSize)
+            let xform = try await track.load(.preferredTransform)
+            let oriented = size.applying(xform)
+            let w = abs(oriented.width)
+            let h = abs(oriented.height)
+            guard w > 0, h > 0 else { return }
+
+            let target = computeSheetSize(w: w, h: h)
+            await MainActor.run {
+                self.naturalSize = CGSize(width: w, height: h)
+                withAnimation(.easeOut(duration: 0.18)) {
+                    self.sheetSize = target
+                }
+            }
+        } catch {
+            // Asset inspection failed — keep the default sheet size, the
+            // player still renders fine.
+        }
+    }
+
+    private func computeSheetSize(w: CGFloat, h: CGFloat) -> CGSize {
+        let screen = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.size
+            ?? CGSize(width: 1440, height: 900)
+        let maxW = screen.width - screenMargin
+        let maxH = screen.height - screenMargin
+        let availableH = maxH - chromeHeight
+
+        let scale = min(min(maxW / w, 1.0), min(availableH / h, 1.0))
+        var tw = w * scale
+        var th = h * scale + chromeHeight
+        tw = max(tw, minSheet.width)
+        th = max(th, minSheet.height)
+        return CGSize(width: tw, height: th)
+    }
 }
