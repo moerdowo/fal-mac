@@ -534,23 +534,61 @@ struct ImageMediaView: View {
 
 struct VideoMediaView: View {
     let url: URL
-    @State private var player: AVPlayer?
     var body: some View {
-        VideoPlayer(player: player)
+        AVPlayerHost(url: url, showsControls: true, showsFullScreenToggle: true)
             .frame(minHeight: 200, maxHeight: 360)
-            .onAppear { player = AVPlayer(url: url) }
-            .onDisappear { player?.pause(); player = nil }
     }
 }
 
 struct AudioMediaView: View {
     let url: URL
-    @State private var player: AVPlayer?
     var body: some View {
-        VideoPlayer(player: player)
+        AVPlayerHost(url: url, showsControls: true, showsFullScreenToggle: false)
             .frame(height: 60)
-            .onAppear { player = AVPlayer(url: url) }
-            .onDisappear { player?.pause(); player = nil }
+    }
+}
+
+/// Wraps `AVKit.AVPlayerView` directly via NSViewRepresentable instead of
+/// SwiftUI's `VideoPlayer`. On macOS 26 the Swift runtime occasionally fails
+/// to demangle the superclass of `AVPlayerView` when SwiftUI tears down /
+/// rebuilds a `VideoPlayer(player: nil)` mid-render — typically when a
+/// parallel run's polling tick causes a re-render right as the player is
+/// being attached — and that produces a hard SIGABRT.
+///
+/// Hosting the AppKit view directly avoids the SwiftUI internal that's
+/// reaching for that metadata, and lets us eagerly attach the player on
+/// `makeNSView` instead of from `.onAppear` (which was also producing the
+/// "reentrant operation in NSTableView delegate" warning, since onAppear
+/// fires inside a layout pass).
+struct AVPlayerHost: NSViewRepresentable {
+    let url: URL
+    var showsControls: Bool = true
+    var showsFullScreenToggle: Bool = true
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = AVPlayer(url: url)
+        view.controlsStyle = showsControls ? .floating : .none
+        view.showsFullScreenToggleButton = showsFullScreenToggle
+        // AVPlayerView doesn't expose autoplay; we don't want to start
+        // automatically — user presses ▶ when ready.
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        // If the URL changed (e.g. the run record gets a new output), swap
+        // the underlying AVPlayer so the same view recycles cleanly.
+        let currentURL = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url
+        if currentURL != url {
+            nsView.player?.pause()
+            nsView.player = AVPlayer(url: url)
+        }
+    }
+
+    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
+        nsView.player?.pause()
+        nsView.player = nil
     }
 }
 
