@@ -156,29 +156,40 @@ final class FalAPI {
         return try JSONDecoder().decode(FalSubmitResponse.self, from: data)
     }
 
-    /// `GET https://queue.fal.run/<endpoint_id>/requests/<rid>/status?logs=1`
-    func status(endpointId: String, requestId: String) async throws -> FalStatusResponse {
-        let url = URL(string: "https://queue.fal.run/\(endpointId)/requests/\(requestId)/status?logs=1")!
-        var req = URLRequest(url: url)
+    /// GETs the absolute status URL returned by `submit()`.
+    ///
+    /// We use the server-provided URL because endpoints with sub-paths (e.g.
+    /// `fal-ai/flux-pro/v1.1/outpaint`) host their `/requests/<rid>/status`
+    /// at the *app* root, not under the sub-path — constructing it ourselves
+    /// produces 405s.
+    func status(at statusURL: String) async throws -> FalStatusResponse {
+        // Make sure logs=1 is present so we can show progress.
+        var comps = URLComponents(string: statusURL)!
+        var items = comps.queryItems ?? []
+        if !items.contains(where: { $0.name == "logs" }) {
+            items.append(URLQueryItem(name: "logs", value: "1"))
+            comps.queryItems = items
+        }
+        var req = URLRequest(url: comps.url!)
         try authHeaders().forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         let (data, resp) = try await session.data(for: req)
         try Self.throwIfHTTPError(resp, data: data)
         return try JSONDecoder().decode(FalStatusResponse.self, from: data)
     }
 
-    /// `GET https://queue.fal.run/<endpoint_id>/requests/<rid>/response`
-    func result(endpointId: String, requestId: String) async throws -> JSONValue {
-        let url = URL(string: "https://queue.fal.run/\(endpointId)/requests/\(requestId)/response")!
-        var req = URLRequest(url: url)
+    /// GETs the absolute response URL returned by `submit()`. Same sub-path
+    /// caveat as `status(at:)`.
+    func result(at responseURL: String) async throws -> JSONValue {
+        var req = URLRequest(url: URL(string: responseURL)!)
         try authHeaders().forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         let (data, resp) = try await session.data(for: req)
         try Self.throwIfHTTPError(resp, data: data)
         return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 
-    /// `PUT https://queue.fal.run/<endpoint_id>/requests/<rid>/cancel`
-    func cancel(endpointId: String, requestId: String) async {
-        let url = URL(string: "https://queue.fal.run/\(endpointId)/requests/\(requestId)/cancel")!
+    /// PUTs to the absolute cancel URL returned by `submit()`.
+    func cancel(at cancelURL: String) async {
+        guard let url = URL(string: cancelURL) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         if let headers = try? authHeaders() {

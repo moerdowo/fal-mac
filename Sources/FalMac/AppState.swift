@@ -8,6 +8,12 @@ struct RunRecord: Identifiable, Equatable {
     let endpointId: String
     let displayName: String
     var requestId: String?
+    /// Server-provided absolute URLs for polling / fetching result / cancel.
+    /// Persisting them avoids reconstructing them, which breaks for endpoints
+    /// with sub-paths (e.g. `fal-ai/flux-pro/v1.1/outpaint`).
+    var statusURL: String?
+    var responseURL: String?
+    var cancelURL: String?
     var input: JSONValue
     var output: JSONValue?
     var status: FalRequestStatus
@@ -204,12 +210,19 @@ final class AppState: ObservableObject {
         do {
             let submitted = try await FalAPI.shared.submit(endpointId: model.endpointId, body: .object(body))
             record.requestId = submitted.request_id
+            record.statusURL = submitted.status_url
+            record.responseURL = submitted.response_url
+            record.cancelURL = submitted.cancel_url
             currentRun = record
 
-            // Poll until terminal.
+            guard let statusURL = submitted.status_url, let responseURL = submitted.response_url else {
+                throw FalAPIError.other("Submit response missing status_url / response_url")
+            }
+
+            // Poll until terminal, using the server-provided URLs.
             poll: while true {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
-                let status = try await FalAPI.shared.status(endpointId: model.endpointId, requestId: submitted.request_id)
+                let status = try await FalAPI.shared.status(at: statusURL)
                 record.status = status.status
                 if let logs = status.logs {
                     record.logs = logs.map { $0.message }
@@ -217,7 +230,7 @@ final class AppState: ObservableObject {
                 currentRun = record
                 switch status.status {
                 case .COMPLETED:
-                    let result = try await FalAPI.shared.result(endpointId: model.endpointId, requestId: submitted.request_id)
+                    let result = try await FalAPI.shared.result(at: responseURL)
                     record.output = result
                     record.finishedAt = Date()
                     break poll
@@ -240,7 +253,7 @@ final class AppState: ObservableObject {
     }
 
     func cancelCurrent() async {
-        guard let run = currentRun, let rid = run.requestId else { return }
-        await FalAPI.shared.cancel(endpointId: run.endpointId, requestId: rid)
+        guard let run = currentRun, let cancelURL = run.cancelURL else { return }
+        await FalAPI.shared.cancel(at: cancelURL)
     }
 }
