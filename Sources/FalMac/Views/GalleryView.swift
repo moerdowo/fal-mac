@@ -245,28 +245,39 @@ struct GalleryView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: 20)],
-                    spacing: 20
+                    columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: 28)],
+                    spacing: 28
                 ) {
                     ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, item in
                         GalleryTileView(
                             item: item,
                             isSelected: selection.contains(item.id),
-                            onPrimaryClick: { handlePrimaryClick(item: item, index: idx) },
+                            onSelect: { handleSelect(item: item, index: idx) },
                             onLightbox: { lightbox = LightboxState(index: idx) }
                         )
                     }
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 20)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
             }
+            // Spacebar opens the lightbox at the currently-selected item.
+            // Implemented via a hidden Button so the binding is global to
+            // the gallery window without stealing focus from text fields.
+            .background(
+                Button("Open in preview") { openPreviewForSelection() }
+                    .keyboardShortcut(.space, modifiers: [])
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+            )
         }
     }
 
-    /// Click handlers: ⌘-click toggles, ⇧-click range-selects, plain click
-    /// either clears+selects (when something else is selected) or opens
-    /// the item's modal preview.
-    private func handlePrimaryClick(item: GalleryItem, index: Int) {
+    /// Single-click handler — Finder-style.
+    /// - plain click: select only this tile
+    /// - ⌘-click: toggle this tile in the multi-selection
+    /// - ⇧-click: range-select from the existing anchor
+    private func handleSelect(item: GalleryItem, index: Int) {
         let mods = NSEvent.modifierFlags
         if mods.contains(.command) {
             if selection.contains(item.id) { selection.remove(item.id) }
@@ -279,13 +290,16 @@ struct GalleryView: View {
             for i in lo...hi { selection.insert(filtered[i].id) }
             return
         }
-        if !selection.isEmpty {
-            // If we're in select mode, plain click resets to just this one.
-            selection = [item.id]
-            return
-        }
-        // No selection — open the preview / lightbox.
-        lightbox = LightboxState(index: index)
+        // Plain click resets to just this one.
+        selection = [item.id]
+    }
+
+    /// Space-bar handler — open the lightbox at the first selected item.
+    /// No-op when nothing is selected so the shortcut doesn't surprise the
+    /// user mid-search-typing.
+    private func openPreviewForSelection() {
+        guard let first = filtered.firstIndex(where: { selection.contains($0.id) }) else { return }
+        lightbox = LightboxState(index: first)
     }
 }
 
@@ -294,7 +308,7 @@ struct GalleryView: View {
 private struct GalleryTileView: View {
     let item: GalleryItem
     var isSelected: Bool = false
-    var onPrimaryClick: () -> Void = {}
+    var onSelect: () -> Void = {}
     var onLightbox: () -> Void = {}
     @ObservedObject private var store: GalleryStore = .shared
     @State private var videoPoster: NSImage?
@@ -302,10 +316,10 @@ private struct GalleryTileView: View {
     private var localURL: URL { item.localURL(in: store.folder) }
 
     var body: some View {
-        Button {
-            onPrimaryClick()
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
+        // Plain view (not a Button) so we can wire single + double tap
+        // gestures cleanly. Order matters: count: 2 must come before
+        // count: 1 or the single-tap eats the double.
+        VStack(alignment: .leading, spacing: 10) {
                 thumbnail
                     .frame(maxWidth: .infinity)
                     .frame(height: 170)
@@ -331,11 +345,14 @@ private struct GalleryTileView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 }
-            }
-            .padding(12)
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .contentShape(Rectangle())
         .glassCard(cornerRadius: 12)
+        // Double tap opens the lightbox; single tap selects. Order:
+        // count: 2 before count: 1 so the double doesn't fall through.
+        .onTapGesture(count: 2) { onLightbox() }
+        .onTapGesture(count: 1) { onSelect() }
         // Selection ring on top of the glass card.
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -510,10 +527,16 @@ struct LightboxView: View {
         )
     }
 
+    /// Sheet size for the lightbox. 70% × 75% of the visible frame, hard
+    /// capped so we never exceed a comfortable "modal preview" footprint
+    /// even on 6K displays. The image inside scales to fit, so a tight
+    /// window doesn't crop the content.
     private var screenSize: CGSize {
         let v = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.size
             ?? CGSize(width: 1440, height: 900)
-        return CGSize(width: v.width * 0.95, height: v.height * 0.95)
+        let w = min(v.width * 0.70, 1100)
+        let h = min(v.height * 0.75, 760)
+        return CGSize(width: w, height: h)
     }
 
     @ViewBuilder
