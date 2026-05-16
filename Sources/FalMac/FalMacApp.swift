@@ -50,11 +50,19 @@ struct FalMacApp: App {
         }
         .windowToolbarStyle(.unified)
 
+        // Separate Gallery window — opened via the toolbar button in the
+        // main window. macOS allows reopening from Window menu after close.
+        WindowGroup("Gallery", id: "gallery") {
+            GalleryView()
+                .environmentObject(state)
+        }
+        .defaultSize(width: 900, height: 620)
+
         // ⌘, is wired automatically when a Settings scene exists.
         Settings {
             SettingsView()
                 .environmentObject(state)
-                .frame(width: 520, height: 280)
+                .frame(width: 540, height: 360)
         }
     }
 }

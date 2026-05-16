@@ -36,7 +36,9 @@ final class AppState: ObservableObject {
         if let s = UserDefaults.standard.string(forKey: "downloadFolder") {
             return URL(fileURLWithPath: s)
         }
-        return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        // Default to the gallery folder so manual Save buttons and the
+        // auto-download pipeline drop files into the same place.
+        return GalleryStore.defaultFolder()
     }()
 
     // Catalog
@@ -381,6 +383,7 @@ final class AppState: ObservableObject {
                                 $0.output = result
                                 $0.finishedAt = Date()
                             }
+                            await autoIngest(result: result, runId: runId)
                             break poll
                         } catch is CancellationError {
                             throw CancellationError()
@@ -426,6 +429,52 @@ final class AppState: ObservableObject {
     private func updateRun(_ id: UUID, _ mutator: (inout RunRecord) -> Void) {
         guard let idx = runs.firstIndex(where: { $0.id == id }) else { return }
         mutator(&runs[idx])
+    }
+
+    /// After a run completes, scan its output JSON for media URLs and push
+    /// each into the Gallery. No-op if the user disabled auto-download.
+    private func autoIngest(result: JSONValue, runId: UUID) async {
+        guard GalleryStore.shared.autoDownload else { return }
+        guard let idx = runs.firstIndex(where: { $0.id == runId }) else { return }
+        let run = runs[idx]
+        let media = MediaScanner.scan(result)
+        guard !media.isEmpty else { return }
+
+        let prompt = Self.extractPrompt(from: run.input)
+
+        for item in media {
+            let kind = mapKind(item.kind)
+            await GalleryStore.shared.ingest(
+                url: item.url,
+                kind: kind,
+                modelDisplayName: run.displayName,
+                modelEndpoint: run.endpointId,
+                prompt: prompt
+            )
+        }
+    }
+
+    private func mapKind(_ k: MediaItem.Kind) -> GalleryItem.Kind {
+        switch k {
+        case .image: return .image
+        case .video: return .video
+        case .audio: return .audio
+        case .file: return .file
+        }
+    }
+
+    /// Best-effort: pull a "prompt" out of the request body so the gallery
+    /// has something to display / search on. Tries a handful of common
+    /// fal field names.
+    private static func extractPrompt(from input: JSONValue) -> String? {
+        guard case .object(let dict) = input else { return nil }
+        let candidates = ["prompt", "text", "input", "description", "query"]
+        for key in candidates {
+            if case .string(let s) = dict[key] ?? .null, !s.isEmpty {
+                return s
+            }
+        }
+        return nil
     }
 
     /// Cancel an in-flight run: server-side via PUT, and locally stop polling.

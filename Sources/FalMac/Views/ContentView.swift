@@ -34,6 +34,8 @@ struct ContentView: View {
 
 private struct Toolbar: ToolbarContent {
     @EnvironmentObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
+
     var body: some ToolbarContent {
         // Balance lives on the leading edge — it's a status indicator, not
         // an action — so the full toolbar gap separates it from the reload
@@ -41,7 +43,15 @@ private struct Toolbar: ToolbarContent {
         ToolbarItem(placement: .navigation) {
             BalanceChip()
         }
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                openWindow(id: "gallery")
+            } label: {
+                Label("Gallery", systemImage: "photo.stack")
+            }
+            .help("Open the saved-media gallery (⇧⌘G)")
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+
             Button {
                 Task {
                     await state.loadModels()

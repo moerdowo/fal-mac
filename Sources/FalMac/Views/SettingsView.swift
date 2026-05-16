@@ -3,6 +3,8 @@ import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var gallery: GalleryStore = .shared
+
     @State private var draftKey: String = ""
     @State private var showSaved = false
 
@@ -39,20 +41,41 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Default Download Folder") {
+            Section("Gallery") {
+                Toggle(isOn: Binding(
+                    get: { gallery.autoDownload },
+                    set: { gallery.autoDownload = $0 }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-save generated media")
+                        Text("Every completed run's outputs are downloaded to the Gallery folder and indexed in the Gallery window.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 HStack {
-                    Text(state.defaultDownloadFolder?.path ?? "—")
-                        .truncationMode(.middle)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Gallery folder").font(.callout)
+                        Text(gallery.folder.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .truncationMode(.middle)
+                            .lineLimit(1)
+                    }
                     Spacer()
                     Button("Choose…") {
                         let panel = NSOpenPanel()
                         panel.canChooseFiles = false
                         panel.canChooseDirectories = true
                         panel.allowsMultipleSelection = false
+                        panel.canCreateDirectories = true
                         if panel.runModal() == .OK, let url = panel.url {
+                            gallery.setFolder(url)
                             state.saveDownloadFolder(url)
                         }
+                    }
+                    Button("Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([gallery.folder])
                     }
                 }
             }

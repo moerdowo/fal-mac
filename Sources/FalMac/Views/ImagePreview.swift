@@ -99,22 +99,42 @@ struct ImagePreviewSheet: View {
         }
         .frame(width: sheetSize.width, height: sheetSize.height)
         .task(id: url) {
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                if let img = NSImage(data: data) {
-                    let target = computeSheetSize(for: img)
-                    await MainActor.run {
-                        self.image = img
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            self.sheetSize = target
-                        }
+            await loadImage()
+        }
+    }
+
+    /// Loads via NSImage(contentsOf:) for file URLs (Gallery local files) and
+    /// URLSession for http(s) — keeps the network path async/cancellable.
+    private func loadImage() async {
+        if url.isFileURL {
+            if let img = NSImage(contentsOf: url) {
+                let target = computeSheetSize(for: img)
+                await MainActor.run {
+                    self.image = img
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        self.sheetSize = target
                     }
-                } else {
-                    await MainActor.run { self.loadError = "Server didn't return a decodable image." }
                 }
-            } catch {
-                await MainActor.run { self.loadError = error.localizedDescription }
+            } else {
+                await MainActor.run { self.loadError = "Couldn't read the image at \(url.path)." }
             }
+            return
+        }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let img = NSImage(data: data) {
+                let target = computeSheetSize(for: img)
+                await MainActor.run {
+                    self.image = img
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        self.sheetSize = target
+                    }
+                }
+            } else {
+                await MainActor.run { self.loadError = "Server didn't return a decodable image." }
+            }
+        } catch {
+            await MainActor.run { self.loadError = error.localizedDescription }
         }
     }
 
