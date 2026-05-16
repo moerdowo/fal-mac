@@ -187,31 +187,46 @@ final class FalAPI {
         _ = try? await session.data(for: req)
     }
 
-    // MARK: File upload (fal CDN v3)
+    // MARK: File upload (fal CDN)
 
-    /// Uploads a local file to fal CDN v3 and returns a publicly-accessible URL
-    /// suitable for use as a model input (e.g. `image_url`, `audio_url`).
+    /// Uploads a local file via the fal storage initiate flow and returns the
+    /// resulting public URL, suitable for use as a model input (e.g.
+    /// `image_url`, `audio_url`).
+    ///
+    /// Two-step protocol (same as the fal-js / fal-client SDKs):
+    /// 1. `POST https://rest.alpha.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3`
+    ///    with JSON `{file_name, content_type}` → returns `{upload_url, file_url}`.
+    /// 2. `PUT <upload_url>` with raw bytes and `Content-Type: <mime>`. No auth
+    ///    header on the signed URL.
     func uploadFile(_ fileURL: URL) async throws -> String {
-        // Step 1: get a one-shot bearer token for the v3 bucket.
-        var tokenReq = URLRequest(url: URL(string: "https://rest.alpha.fal.ai/storage/auth/token?storage_type=fal-cdn-v3")!)
-        tokenReq.httpMethod = "POST"
-        try authHeaders().forEach { tokenReq.setValue($0.value, forHTTPHeaderField: $0.key) }
-        let (tokenData, tokenResp) = try await session.data(for: tokenReq)
-        try Self.throwIfHTTPError(tokenResp, data: tokenData)
-        struct Token: Codable { let token: String; let base_url: String }
-        let tk = try JSONDecoder().decode(Token.self, from: tokenData)
-
-        // Step 2: stream the bytes to the bucket.
         let mime = Self.mimeType(for: fileURL.pathExtension)
-        var upload = URLRequest(url: URL(string: "\(tk.base_url)/files/upload")!)
-        upload.httpMethod = "POST"
-        upload.setValue("Bearer \(tk.token)", forHTTPHeaderField: "Authorization")
-        upload.setValue(mime, forHTTPHeaderField: "Content-Type")
+        let filename = fileURL.lastPathComponent
+
+        // Step 1 — initiate.
+        var initiate = URLRequest(url: URL(string: "https://rest.alpha.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3")!)
+        initiate.httpMethod = "POST"
+        initiate.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try authHeaders().forEach { initiate.setValue($0.value, forHTTPHeaderField: $0.key) }
+        let initBody: [String: String] = ["file_name": filename, "content_type": mime]
+        initiate.httpBody = try JSONSerialization.data(withJSONObject: initBody)
+
+        let (initData, initResp) = try await session.data(for: initiate)
+        try Self.throwIfHTTPError(initResp, data: initData)
+        struct InitiateResp: Codable {
+            let upload_url: String
+            let file_url: String
+        }
+        let initResult = try JSONDecoder().decode(InitiateResp.self, from: initData)
+
+        // Step 2 — PUT raw bytes to the signed URL. No auth.
+        var put = URLRequest(url: URL(string: initResult.upload_url)!)
+        put.httpMethod = "PUT"
+        put.setValue(mime, forHTTPHeaderField: "Content-Type")
         let body = try Data(contentsOf: fileURL)
-        let (data, resp) = try await session.upload(for: upload, from: body)
-        try Self.throwIfHTTPError(resp, data: data)
-        struct R: Codable { let access_url: String }
-        return try JSONDecoder().decode(R.self, from: data).access_url
+        let (uploadData, uploadResp) = try await session.upload(for: put, from: body)
+        try Self.throwIfHTTPError(uploadResp, data: uploadData)
+
+        return initResult.file_url
     }
 
     private static func mimeType(for ext: String) -> String {
