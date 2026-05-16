@@ -128,6 +128,24 @@ final class FalAPI {
 
     // MARK: Per-model schema
 
+    // MARK: Account balance
+
+    /// `GET https://rest.alpha.fal.ai/billing/user_balance` → raw JSON number
+    /// representing the USD balance for the authenticated key.
+    func balance() async throws -> Double {
+        let url = URL(string: "https://rest.alpha.fal.ai/billing/user_balance")!
+        var req = URLRequest(url: url)
+        try authHeaders().forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+        let (data, resp) = try await session.data(for: req)
+        try Self.throwIfHTTPError(resp, data: data)
+        // Body is a bare number like `50.87`, not an object.
+        guard let raw = String(data: data, encoding: .utf8),
+              let value = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw FalAPIError.decoding("balance endpoint returned non-numeric body")
+        }
+        return value
+    }
+
     /// `GET https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>`
     func openAPI(for endpointId: String) async throws -> JSONValue {
         var comps = URLComponents(string: "https://fal.ai/api/openapi/queue/openapi.json")!

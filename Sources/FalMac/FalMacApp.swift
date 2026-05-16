@@ -31,8 +31,9 @@ struct FalMacApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 1000, minHeight: 640)
                 .task {
-                    if !state.apiKey.isEmpty, state.allModels.isEmpty {
-                        await state.loadModels()
+                    if !state.apiKey.isEmpty {
+                        if state.allModels.isEmpty { await state.loadModels() }
+                        await state.refreshBalance()
                     }
                 }
         }

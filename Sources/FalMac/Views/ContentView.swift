@@ -36,14 +36,98 @@ private struct Toolbar: ToolbarContent {
     @EnvironmentObject var state: AppState
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            BalanceChip()
             Button {
-                Task { await state.loadModels() }
+                Task {
+                    await state.loadModels()
+                    await state.refreshBalance()
+                }
             } label: {
                 Label("Reload", systemImage: "arrow.clockwise")
             }
-            .help("Reload the model catalog")
+            .help("Reload the model catalog and balance")
             .disabled(state.apiKey.isEmpty || state.modelsLoading)
         }
+    }
+}
+
+/// Compact balance pill rendered in the toolbar's leading-trailing area.
+/// Tapping it triggers a refresh; hovering shows the exact value.
+private struct BalanceChip: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Button {
+            Task { await state.refreshBalance() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "creditcard")
+                    .font(.caption)
+                content
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(background, in: Capsule())
+            .overlay(Capsule().stroke(borderColor, lineWidth: 0.5))
+            .foregroundStyle(foreground)
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .disabled(state.apiKey.isEmpty)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if state.apiKey.isEmpty {
+            Text("No key").font(.caption.weight(.medium))
+        } else if state.balanceLoading && state.balance == nil {
+            ProgressView().controlSize(.small)
+        } else if let err = state.balanceError, state.balance == nil {
+            Text(err.contains("401") || err.contains("403") ? "Invalid key" : "Balance error")
+                .font(.caption.weight(.medium))
+        } else if let bal = state.balance {
+            Text(format(bal)).font(.caption.weight(.semibold)).monospacedDigit()
+            if state.balanceLoading {
+                ProgressView().controlSize(.small)
+            }
+        } else {
+            Text("—").font(.caption)
+        }
+    }
+
+    private var background: AnyShapeStyle {
+        if state.apiKey.isEmpty { return AnyShapeStyle(Color.secondary.opacity(0.12)) }
+        if state.balanceError != nil && state.balance == nil { return AnyShapeStyle(Color.red.opacity(0.12)) }
+        if let bal = state.balance, bal < 1 { return AnyShapeStyle(Color.orange.opacity(0.15)) }
+        return AnyShapeStyle(Color.green.opacity(0.12))
+    }
+
+    private var borderColor: Color {
+        if state.apiKey.isEmpty { return .secondary.opacity(0.3) }
+        if state.balanceError != nil && state.balance == nil { return .red.opacity(0.4) }
+        if let bal = state.balance, bal < 1 { return .orange.opacity(0.4) }
+        return .green.opacity(0.4)
+    }
+
+    private var foreground: Color {
+        if state.apiKey.isEmpty { return .secondary }
+        if state.balanceError != nil && state.balance == nil { return .red }
+        if let bal = state.balance, bal < 1 { return .orange }
+        return .green
+    }
+
+    private var helpText: String {
+        if state.apiKey.isEmpty { return "Add an API key in Settings" }
+        if let bal = state.balance { return "Balance: $\(bal). Click to refresh." }
+        if let err = state.balanceError { return err }
+        return "Click to fetch balance"
+    }
+
+    private func format(_ v: Double) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .currency
+        f.currencyCode = "USD"
+        f.maximumFractionDigits = v < 10 ? 4 : 2
+        return f.string(from: NSNumber(value: v)) ?? "$\(v)"
     }
 }
 

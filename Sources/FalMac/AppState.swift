@@ -59,6 +59,11 @@ final class AppState: ObservableObject {
     @Published var currentRun: RunRecord?
     @Published var runs: [RunRecord] = []
 
+    // Account balance (USD). nil = not yet fetched.
+    @Published var balance: Double?
+    @Published var balanceLoading = false
+    @Published var balanceError: String?
+
     /// Set of known categories surfaced from already-loaded models.
     var knownCategories: [String] {
         let set = Set(allModels.compactMap { $0.category })
@@ -79,6 +84,25 @@ final class AppState: ObservableObject {
     func saveDownloadFolder(_ url: URL) {
         defaultDownloadFolder = url
         UserDefaults.standard.set(url.path, forKey: "downloadFolder")
+    }
+
+    // MARK: - Balance
+
+    /// Fetch the USD balance for the configured key. No-op if no key.
+    func refreshBalance() async {
+        guard !apiKey.isEmpty else {
+            balance = nil
+            balanceError = nil
+            return
+        }
+        balanceLoading = true
+        balanceError = nil
+        defer { balanceLoading = false }
+        do {
+            balance = try await FalAPI.shared.balance()
+        } catch {
+            balanceError = error.localizedDescription
+        }
     }
 
     // MARK: - Model catalog
@@ -250,6 +274,10 @@ final class AppState: ObservableObject {
 
         currentRun = record
         runs.insert(record, at: 0)
+
+        // A run may have consumed credits — refresh in the background so the
+        // toolbar pill reflects the new total without blocking.
+        Task { await refreshBalance() }
     }
 
     func cancelCurrent() async {

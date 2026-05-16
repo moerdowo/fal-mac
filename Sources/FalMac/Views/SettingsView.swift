@@ -19,6 +19,7 @@ struct SettingsView: View {
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             await MainActor.run { showSaved = false }
                             await state.loadModels()
+                            await state.refreshBalance()
                         }
                     }
                     .keyboardShortcut(.return, modifiers: [])
