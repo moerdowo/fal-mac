@@ -56,7 +56,7 @@ struct FalMacApp: App {
             GalleryView()
                 .environmentObject(state)
         }
-        .defaultSize(width: 900, height: 620)
+        .defaultSize(width: 1040, height: 720)
 
         WindowGroup("Spend", id: "spend") {
             SpendView()

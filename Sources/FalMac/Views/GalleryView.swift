@@ -83,7 +83,7 @@ struct GalleryView: View {
             content
         }
         .navigationTitle("Gallery")
-        .frame(minWidth: 720, minHeight: 480)
+        .frame(minWidth: 820, minHeight: 540)
         // ⎋ clears selection if anything's selected.
         .onExitCommand {
             if !selection.isEmpty { selection.removeAll() }
@@ -130,8 +130,8 @@ struct GalleryView: View {
             .controlSize(.small)
             .keyboardShortcut(.delete, modifiers: [])
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
         .background(.regularMaterial)
     }
 
@@ -202,8 +202,9 @@ struct GalleryView: View {
                 .controlSize(.small)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 24)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
     }
 
     @ViewBuilder
@@ -244,8 +245,8 @@ struct GalleryView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 200, maximum: 280), spacing: 14)],
-                    spacing: 14
+                    columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: 20)],
+                    spacing: 20
                 ) {
                     ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, item in
                         GalleryTileView(
@@ -256,7 +257,8 @@ struct GalleryView: View {
                         )
                     }
                 }
-                .padding(14)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
             }
         }
     }
@@ -303,13 +305,13 @@ private struct GalleryTileView: View {
         Button {
             onPrimaryClick()
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
                 thumbnail
                     .frame(maxWidth: .infinity)
-                    .frame(height: 160)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(height: 170)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(item.modelDisplayName)
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
@@ -329,10 +331,8 @@ private struct GalleryTileView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 4)
             }
-            .padding(6)
+            .padding(12)
         }
         .buttonStyle(.plain)
         .glassCard(cornerRadius: 12)
