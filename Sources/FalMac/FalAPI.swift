@@ -109,10 +109,21 @@ final class FalAPI: @unchecked Sendable {
     }()
 
     private func apiKey() throws -> String {
-        guard let key = Keychain.get("api_key"), !key.isEmpty else {
-            throw FalAPIError.noAPIKey
+        // Resolve the active profile (the multi-key UI writes it to
+        // UserDefaults under "activeProfile"; first launch / migrated
+        // installs fall back to the "Default" profile created by
+        // Keychain.migrateLegacyIfNeeded).
+        let profile = UserDefaults.standard.string(forKey: "activeProfile") ?? "Default"
+        if let key = Keychain.get(profile), !key.isEmpty {
+            return key
         }
-        return key
+        // Last-resort fallback for any install that pre-dates the migration
+        // (e.g. ran an older build alongside the new one). Reading the
+        // legacy slot is harmless when it's empty.
+        if let legacy = Keychain.get("api_key"), !legacy.isEmpty {
+            return legacy
+        }
+        throw FalAPIError.noAPIKey
     }
 
     private func authHeaders() throws -> [String: String] {
