@@ -55,9 +55,13 @@ final class AppState: ObservableObject {
     // user has touched (or that have defaults the model still needs).
     @Published var formValues: [String: JSONValue] = [:]
 
-    // Current run
-    @Published var currentRun: RunRecord?
+    /// All runs (newest first). Active + completed all live here so the
+    /// queue panel can render them as a single stack. The polling Task for
+    /// each active run mutates its entry in-place by `id`.
     @Published var runs: [RunRecord] = []
+    /// Per-run polling tasks so we can cancel them when the user dismisses
+    /// or clears the queue.
+    private var runTasks: [UUID: Task<Void, Never>] = [:]
 
     // Account balance (USD). nil = not yet fetched.
     @Published var balance: Double?
@@ -185,9 +189,12 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Submit + poll
+    // MARK: - Submit + poll (parallel queue)
 
-    func run() async {
+    /// Fire-and-forget. Adds a new run to the top of the queue and spawns its
+    /// own Task to submit + poll. The form is immediately ready to submit
+    /// again — multiple concurrent runs are supported.
+    func run() {
         guard let model = selectedModel, let schema = schema else { return }
 
         // Strip null/empty values; the API rejects extraneous keys for some models.
@@ -214,11 +221,10 @@ final class AppState: ObservableObject {
                 error: "Missing required field(s): \(names)"
             )
             runs.insert(rec, at: 0)
-            currentRun = rec
             return
         }
 
-        var record = RunRecord(
+        let record = RunRecord(
             endpointId: model.endpointId,
             displayName: model.displayName,
             requestId: nil,
@@ -229,59 +235,133 @@ final class AppState: ObservableObject {
             finishedAt: nil,
             error: nil
         )
-        currentRun = record
+        runs.insert(record, at: 0)
 
+        // Capture only the values the Task needs.
+        let runId = record.id
+        let endpointId = model.endpointId
+        let payload: JSONValue = .object(body)
+
+        runTasks[runId] = Task { [weak self] in
+            await self?.execute(runId: runId, endpointId: endpointId, body: payload)
+        }
+    }
+
+    /// Submits + polls a single run. All mutation happens via `updateRun`
+    /// so polling Tasks for different runs don't collide.
+    private func execute(runId: UUID, endpointId: String, body: JSONValue) async {
         do {
-            let submitted = try await FalAPI.shared.submit(endpointId: model.endpointId, body: .object(body))
-            record.requestId = submitted.request_id
-            record.statusURL = submitted.status_url
-            record.responseURL = submitted.response_url
-            record.cancelURL = submitted.cancel_url
-            currentRun = record
-
-            guard let statusURL = submitted.status_url, let responseURL = submitted.response_url else {
-                throw FalAPIError.other("Submit response missing status_url / response_url")
+            let submitted = try await FalAPI.shared.submit(endpointId: endpointId, body: body)
+            updateRun(runId) {
+                $0.requestId = submitted.request_id
+                $0.statusURL = submitted.status_url
+                $0.responseURL = submitted.response_url
+                $0.cancelURL = submitted.cancel_url
             }
 
-            // Poll until terminal, using the server-provided URLs.
-            poll: while true {
+            guard let statusURL = submitted.status_url, let responseURL = submitted.response_url else {
+                updateRun(runId) {
+                    $0.status = .FAILED
+                    $0.error = "Submit response missing status_url / response_url"
+                    $0.finishedAt = Date()
+                }
+                Task { await refreshBalance() }
+                return
+            }
+
+            poll: while !Task.isCancelled {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
                 let status = try await FalAPI.shared.status(at: statusURL)
-                record.status = status.status
-                if let logs = status.logs {
-                    record.logs = logs.map { $0.message }
+                updateRun(runId) {
+                    $0.status = status.status
+                    if let logs = status.logs { $0.logs = logs.map { $0.message } }
                 }
-                currentRun = record
                 switch status.status {
                 case .COMPLETED:
                     let result = try await FalAPI.shared.result(at: responseURL)
-                    record.output = result
-                    record.finishedAt = Date()
+                    updateRun(runId) {
+                        $0.output = result
+                        $0.finishedAt = Date()
+                    }
                     break poll
                 case .FAILED:
-                    record.error = "Job failed."
-                    record.finishedAt = Date()
+                    updateRun(runId) {
+                        $0.error = "Job failed."
+                        $0.finishedAt = Date()
+                    }
                     break poll
                 default:
                     continue
                 }
             }
+        } catch is CancellationError {
+            // Task was cancelled by user; nothing more to do.
         } catch {
-            record.status = .FAILED
-            record.error = error.localizedDescription
-            record.finishedAt = Date()
+            updateRun(runId) {
+                $0.status = .FAILED
+                $0.error = error.localizedDescription
+                $0.finishedAt = Date()
+            }
         }
-
-        currentRun = record
-        runs.insert(record, at: 0)
-
-        // A run may have consumed credits — refresh in the background so the
-        // toolbar pill reflects the new total without blocking.
+        runTasks[runId] = nil
+        // Each completed run may have consumed credits.
         Task { await refreshBalance() }
     }
 
-    func cancelCurrent() async {
-        guard let run = currentRun, let cancelURL = run.cancelURL else { return }
-        await FalAPI.shared.cancel(at: cancelURL)
+    /// Apply a mutation to the run record matching `id`. Lookups by id remain
+    /// correct even when array order shifts (it doesn't, but defensive).
+    private func updateRun(_ id: UUID, _ mutator: (inout RunRecord) -> Void) {
+        guard let idx = runs.firstIndex(where: { $0.id == id }) else { return }
+        mutator(&runs[idx])
+    }
+
+    /// Cancel an in-flight run: server-side via PUT, and locally stop polling.
+    func cancelRun(_ id: UUID) async {
+        guard let idx = runs.firstIndex(where: { $0.id == id }) else { return }
+        let run = runs[idx]
+        if let url = run.cancelURL {
+            await FalAPI.shared.cancel(at: url)
+        }
+        runTasks[id]?.cancel()
+        runTasks[id] = nil
+        updateRun(id) {
+            if $0.status == .IN_QUEUE || $0.status == .IN_PROGRESS {
+                $0.status = .FAILED
+                $0.error = "Cancelled."
+                $0.finishedAt = Date()
+            }
+        }
+    }
+
+    /// Remove one run from the queue. Cancels its task if still active.
+    func removeRun(_ id: UUID) {
+        if let task = runTasks[id] {
+            task.cancel()
+            runTasks[id] = nil
+            // Best-effort server cancel; don't block the UI.
+            if let idx = runs.firstIndex(where: { $0.id == id }),
+               let url = runs[idx].cancelURL {
+                Task { await FalAPI.shared.cancel(at: url) }
+            }
+        }
+        runs.removeAll { $0.id == id }
+    }
+
+    /// Cancel every active run, then empty the queue.
+    func clearAllRuns() {
+        for (id, task) in runTasks {
+            task.cancel()
+            if let idx = runs.firstIndex(where: { $0.id == id }),
+               let url = runs[idx].cancelURL {
+                Task { await FalAPI.shared.cancel(at: url) }
+            }
+        }
+        runTasks.removeAll()
+        runs.removeAll()
+    }
+
+    /// True when at least one run is still in queue / running.
+    var hasActiveRuns: Bool {
+        runs.contains { $0.status == .IN_QUEUE || $0.status == .IN_PROGRESS }
     }
 }

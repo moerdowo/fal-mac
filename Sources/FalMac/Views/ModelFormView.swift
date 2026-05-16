@@ -57,27 +57,29 @@ struct ModelFormView: View {
 
     @ViewBuilder
     private var footer: some View {
-        let isRunning = state.currentRun?.status == .IN_QUEUE || state.currentRun?.status == .IN_PROGRESS
         HStack {
-            if isRunning {
-                Button(role: .destructive) {
-                    Task { await state.cancelCurrent() }
-                } label: {
-                    Label("Cancel", systemImage: "stop.fill")
-                }
+            if state.hasActiveRuns {
+                Label("\(activeCount) running", systemImage: "circle.dotted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
             Button {
-                Task { await state.run() }
+                state.run()
             } label: {
-                Label(isRunning ? "Running…" : "Run", systemImage: "play.fill")
+                Label("Run", systemImage: "play.fill")
                     .frame(minWidth: 80)
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(isRunning || state.schema == nil || state.apiKey.isEmpty)
+            .disabled(state.schema == nil || state.apiKey.isEmpty)
+            .help("Submit a new run — fires immediately, no waiting (⌘↩)")
         }
         .padding(12)
+    }
+
+    private var activeCount: Int {
+        state.runs.filter { $0.status == .IN_QUEUE || $0.status == .IN_PROGRESS }.count
     }
 }
 

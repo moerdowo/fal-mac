@@ -19,8 +19,8 @@ struct ContentView: View {
                     .navigationSplitViewColumnWidth(min: 360, ideal: 460)
             }
         } detail: {
-            OutputView()
-                .navigationSplitViewColumnWidth(min: 360, ideal: 520)
+            QueueView()
+                .navigationSplitViewColumnWidth(min: 380, ideal: 560)
         }
         .toolbar { Toolbar() }
         .overlay(alignment: .top) {

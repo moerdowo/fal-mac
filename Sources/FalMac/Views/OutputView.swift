@@ -3,25 +3,34 @@ import AVKit
 import AppKit
 import UniformTypeIdentifiers
 
-struct OutputView: View {
+/// Stacked queue panel for the right column. Renders every run (active + done)
+/// as a `RunCardView`, newest on top. Each card has its own status, output,
+/// media viewers, and download / cancel / dismiss controls so multiple
+/// concurrent runs can be monitored at once.
+struct QueueView: View {
     @EnvironmentObject var state: AppState
+    @State private var showConfirmClear = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
 
-            ScrollView {
-                if let run = state.currentRun {
-                    runBody(run)
-                        .padding(16)
-                } else {
-                    ContentUnavailableViewCompat(
-                        title: "No output yet",
-                        systemImage: "sparkles",
-                        description: "Run a model to see results here."
-                    )
-                    .padding(.top, 60)
+            if state.runs.isEmpty {
+                ContentUnavailableViewCompat(
+                    title: "No runs yet",
+                    systemImage: "tray",
+                    description: "Pick a model, fill the form, and press Run (⌘↩). You can fire multiple runs without waiting — each one shows up here as a card."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(state.runs) { run in
+                            RunCardView(run: run)
+                                .id(run.id)
+                        }
+                    }
+                    .padding(12)
                 }
             }
         }
@@ -29,35 +38,161 @@ struct OutputView: View {
 
     @ViewBuilder
     private var header: some View {
-        HStack {
-            if let run = state.currentRun {
-                VStack(alignment: .leading) {
-                    Text(run.displayName).font(.headline)
-                    HStack(spacing: 8) {
-                        StatusBadge(status: run.status)
-                        if let rid = run.requestId {
-                            Text(rid).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-            } else {
-                Text("Output").font(.headline)
+        HStack(spacing: 10) {
+            Text("Queue")
+                .font(.headline)
+            if !state.runs.isEmpty {
+                Text("\(activeCount) active · \(state.runs.count) total")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
             Spacer()
+            Button(role: .destructive) {
+                showConfirmClear = true
+            } label: {
+                Label("Clear", systemImage: "trash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(state.runs.isEmpty)
+            .help("Cancel any active runs and remove all cards")
+            .confirmationDialog(
+                "Clear all runs?",
+                isPresented: $showConfirmClear,
+                titleVisibility: .visible
+            ) {
+                Button("Clear \(state.runs.count) run\(state.runs.count == 1 ? "" : "s")", role: .destructive) {
+                    state.clearAllRuns()
+                }
+                Button("Keep", role: .cancel) {}
+            } message: {
+                if activeCount > 0 {
+                    Text("\(activeCount) run\(activeCount == 1 ? " is" : "s are") still running and will be cancelled.")
+                } else {
+                    Text("This removes all finished runs from the queue.")
+                }
+            }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var activeCount: Int {
+        state.runs.filter { $0.status == .IN_QUEUE || $0.status == .IN_PROGRESS }.count
+    }
+}
+
+// MARK: - Run card
+
+/// One run as a card. Header is always visible; media + logs + raw JSON
+/// collapse into a DisclosureGroup so a stack of many runs stays scannable.
+struct RunCardView: View {
+    let run: RunRecord
+    @EnvironmentObject var state: AppState
+    @State private var expanded: Bool = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
+            if expanded {
+                Divider().padding(.vertical, 6)
+                body(for: run)
+                    .padding(.bottom, 8)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.gray.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(borderColor, lineWidth: borderWidth)
+        )
+    }
+
+    private var borderColor: Color {
+        switch run.status {
+        case .IN_QUEUE: return .blue.opacity(0.35)
+        case .IN_PROGRESS: return .orange.opacity(0.45)
+        case .COMPLETED: return .green.opacity(0.25)
+        case .FAILED: return .red.opacity(0.35)
+        case .UNKNOWN: return Color.gray.opacity(0.25)
+        }
+    }
+    private var borderWidth: CGFloat {
+        run.status == .IN_PROGRESS ? 1.2 : 0.6
     }
 
     @ViewBuilder
-    private func runBody(_ run: RunRecord) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button { expanded.toggle() } label: {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 14)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(run.displayName).font(.headline).lineLimit(1)
+                    StatusBadge(status: run.status)
+                }
+                HStack(spacing: 6) {
+                    Text(run.endpointId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let rid = run.requestId {
+                        Text("·").foregroundStyle(.secondary)
+                        Text(rid)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            Spacer()
+
+            if isActive {
+                Button {
+                    Task { await state.cancelRun(run.id) }
+                } label: {
+                    Image(systemName: "stop.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Cancel this run")
+            }
+            Button {
+                state.removeRun(run.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove from queue")
+        }
+    }
+
+    private var isActive: Bool {
+        run.status == .IN_QUEUE || run.status == .IN_PROGRESS
+    }
+
+    @ViewBuilder
+    private func body(for run: RunRecord) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             if let err = run.error {
                 Label(err, systemImage: "exclamationmark.octagon.fill")
                     .foregroundStyle(.red)
-                    .padding(10)
+                    .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
             }
 
             if !run.logs.isEmpty {
@@ -71,27 +206,27 @@ struct OutputView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                 }
+                .font(.caption)
             }
 
             if let output = run.output {
-                let mediaURLs = MediaScanner.scan(output)
-                if mediaURLs.isEmpty {
-                    Text("Response (no media URLs detected)")
-                        .font(.subheadline.weight(.semibold))
+                let media = MediaScanner.scan(output)
+                if media.isEmpty {
                     JSONOutputView(json: output)
                 } else {
-                    Text("Media").font(.subheadline.weight(.semibold))
-                    ForEach(mediaURLs) { item in
+                    ForEach(media) { item in
                         MediaItemView(item: item)
                     }
                     DisclosureGroup("Raw response") {
                         JSONOutputView(json: output)
                     }
+                    .font(.caption)
                 }
-            } else if run.status == .IN_QUEUE || run.status == .IN_PROGRESS {
-                HStack(spacing: 10) {
+            } else if isActive {
+                HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(run.status == .IN_QUEUE ? "Queued…" : "Generating…")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -99,7 +234,9 @@ struct OutputView: View {
     }
 }
 
-private struct StatusBadge: View {
+// MARK: - Helpers (status badge, media scanning, viewers)
+
+struct StatusBadge: View {
     let status: FalRequestStatus
     var body: some View {
         let (label, color): (String, Color) = {
@@ -112,16 +249,14 @@ private struct StatusBadge: View {
             }
         }()
         Text(label)
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 8).padding(.vertical, 2)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6).padding(.vertical, 1)
             .background(color.opacity(0.15), in: Capsule())
             .foregroundStyle(color)
     }
 }
 
-// MARK: - JSON output
-
-private struct JSONOutputView: View {
+struct JSONOutputView: View {
     let json: JSONValue
     var body: some View {
         let text = json.prettyPrinted()
@@ -141,17 +276,15 @@ private struct JSONOutputView: View {
                 Text(text)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
-                    .padding(10)
+                    .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 300)
-            .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2)))
+            .frame(maxHeight: 240)
+            .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.2)))
         }
     }
 }
-
-// MARK: - Media items
 
 struct MediaItem: Identifiable, Hashable {
     let id = UUID()
@@ -165,7 +298,6 @@ enum MediaScanner {
     static func scan(_ json: JSONValue) -> [MediaItem] {
         var out: [MediaItem] = []
         walk(json, label: nil, into: &out)
-        // De-dupe by URL
         var seen = Set<URL>()
         return out.filter { seen.insert($0.url).inserted }
     }
@@ -174,10 +306,8 @@ enum MediaScanner {
         switch v {
         case .object(let dict):
             for (k, val) in dict {
-                // Pull URL from {"url": "..."} shaped sub-objects
                 if k == "url", let s = val.stringValue, let u = URL(string: s) {
-                    let kind = classify(url: u, key: label ?? k)
-                    out.append(MediaItem(url: u, kind: kind, label: label))
+                    out.append(MediaItem(url: u, kind: classify(url: u, key: label ?? k), label: label))
                 } else {
                     walk(val, label: k, into: &out)
                 }
@@ -213,30 +343,25 @@ enum MediaScanner {
     }
 }
 
-private struct MediaItemView: View {
+struct MediaItemView: View {
     let item: MediaItem
     @EnvironmentObject var state: AppState
     @State private var isSaving = false
     @State private var saveError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: iconName)
-                    .foregroundStyle(.secondary)
+                Image(systemName: iconName).foregroundStyle(.secondary)
                 Text(item.label?.capitalized ?? item.kind.rawValue.capitalized)
                     .font(.subheadline.weight(.medium))
                 Spacer()
-                Button {
-                    NSWorkspace.shared.open(item.url)
-                } label: {
+                Button { NSWorkspace.shared.open(item.url) } label: {
                     Label("Open", systemImage: "safari")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                Button {
-                    save()
-                } label: {
+                Button { save() } label: {
                     if isSaving {
                         HStack { ProgressView().controlSize(.small); Text("Saving…") }
                     } else {
@@ -259,9 +384,9 @@ private struct MediaItemView: View {
                 Text(err).font(.caption).foregroundStyle(.red)
             }
         }
-        .padding(10)
-        .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.2)))
+        .padding(8)
+        .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2)))
     }
 
     private var iconName: String {
@@ -293,22 +418,25 @@ private struct MediaItemView: View {
     }
 }
 
-// MARK: - Per-kind viewers
-
-private struct ImageMediaView: View {
+struct ImageMediaView: View {
     let url: URL
     @State private var image: NSImage?
     @State private var error: String?
+    @State private var showingPreview = false
 
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 480)
-                    .background(Color.black.opacity(0.05))
-                    .cornerRadius(6)
+                Button { showingPreview = true } label: {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 360)
+                        .background(Color.black.opacity(0.05))
+                        .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+                .help("Click to preview at full size")
             } else if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else {
@@ -328,36 +456,33 @@ private struct ImageMediaView: View {
                 await MainActor.run { self.error = error.localizedDescription }
             }
         }
+        .sheet(isPresented: $showingPreview) { ImagePreviewSheet(url: url) }
     }
 }
 
-private struct VideoMediaView: View {
+struct VideoMediaView: View {
     let url: URL
     @State private var player: AVPlayer?
-
     var body: some View {
         VideoPlayer(player: player)
-            .frame(minHeight: 240, maxHeight: 480)
+            .frame(minHeight: 200, maxHeight: 360)
             .onAppear { player = AVPlayer(url: url) }
             .onDisappear { player?.pause(); player = nil }
     }
 }
 
-private struct AudioMediaView: View {
+struct AudioMediaView: View {
     let url: URL
     @State private var player: AVPlayer?
-
     var body: some View {
-        VStack(spacing: 6) {
-            VideoPlayer(player: player)
-                .frame(height: 60)
-        }
-        .onAppear { player = AVPlayer(url: url) }
-        .onDisappear { player?.pause(); player = nil }
+        VideoPlayer(player: player)
+            .frame(height: 60)
+            .onAppear { player = AVPlayer(url: url) }
+            .onDisappear { player?.pause(); player = nil }
     }
 }
 
-private struct FileMediaView: View {
+struct FileMediaView: View {
     let url: URL
     var body: some View {
         Link(destination: url) {
