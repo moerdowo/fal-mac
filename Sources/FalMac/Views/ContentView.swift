@@ -80,7 +80,11 @@ private struct BalanceChip: View {
                     .font(.caption)
                 content
             }
-            .padding(.horizontal, 10).padding(.vertical, 4)
+            // Generous vertical padding so the glass capsule fully wraps
+            // the label — previously the .vertical 4 was tight enough that
+            // descender characters appeared to escape the pill background.
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .foregroundStyle(foreground)
         }
         .buttonStyle(.plain)

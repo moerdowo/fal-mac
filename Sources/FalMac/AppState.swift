@@ -75,6 +75,53 @@ final class AppState: ObservableObject {
     @Published var balanceLoading = false
     @Published var balanceError: String?
 
+    /// Starred models, keyed by endpoint ID. Caches the full summary so the
+    /// Favorites filter can render the list without any API call — including
+    /// for models that aren't in the currently loaded catalog page.
+    @Published private(set) var favorites: [String: FalModelSummary] = AppState.loadFavorites()
+
+    /// Sentinel string used in `selectedCategory` to filter the catalog down
+    /// to favorited models only. Lives outside the regular categoryFilters
+    /// list so it can be rendered as its own picker section.
+    static let favoritesFilterName = "Favorites"
+
+    // MARK: - Favorites
+
+    func isFavorite(_ endpointId: String) -> Bool {
+        favorites[endpointId] != nil
+    }
+
+    /// Toggles favorite for the model. Caches the full summary so the
+    /// Favorites filter can render it later without re-querying the catalog.
+    func toggleFavorite(_ model: FalModelSummary) {
+        if favorites[model.endpointId] != nil {
+            favorites.removeValue(forKey: model.endpointId)
+        } else {
+            favorites[model.endpointId] = model
+        }
+        Self.saveFavorites(favorites)
+
+        // If we're currently viewing the Favorites filter, refresh the list.
+        if selectedCategory == Self.favoritesFilterName {
+            Task { await loadModels() }
+        }
+    }
+
+    private static let favoritesUDKey = "favoriteModels"
+
+    private static func loadFavorites() -> [String: FalModelSummary] {
+        guard let data = UserDefaults.standard.data(forKey: favoritesUDKey),
+              let decoded = try? JSONDecoder().decode([String: FalModelSummary].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private static func saveFavorites(_ favs: [String: FalModelSummary]) {
+        guard let data = try? JSONEncoder().encode(favs) else { return }
+        UserDefaults.standard.set(data, forKey: favoritesUDKey)
+    }
+
     /// Curated top-level filters surfaced in the sidebar picker. Each entry
     /// maps a friendly name to one or more concrete fal `category` strings
     /// (fal's API only accepts a single category per request, so "Audio"
@@ -141,8 +188,26 @@ final class AppState: ObservableObject {
     /// Grouped filters (e.g. "Audio") fan out to multiple sequential API
     /// calls — fal only accepts one `category` per request — and we merge +
     /// de-dupe by endpoint_id client-side. Pagination is disabled for these
-    /// composite views since cursors are per-category.
+    /// composite views since cursors are per-category. The "Favorites"
+    /// pseudo-filter renders from the local cache only, no API call.
     func loadModels() async {
+        // Favorites is a purely client-side view — skip the API entirely.
+        if selectedCategory == Self.favoritesFilterName {
+            modelsError = nil
+            let q = searchText.lowercased()
+            let all = Array(favorites.values)
+            let filtered = q.isEmpty ? all : all.filter {
+                $0.displayName.lowercased().contains(q)
+                    || $0.endpointId.lowercased().contains(q)
+            }
+            allModels = filtered.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+            modelsNextCursor = nil
+            modelsHasMore = false
+            return
+        }
+
         modelsLoading = true
         modelsError = nil
         defer { modelsLoading = false }
@@ -440,7 +505,7 @@ final class AppState: ObservableObject {
         let media = MediaScanner.scan(result)
         guard !media.isEmpty else { return }
 
-        let prompt = Self.extractPrompt(from: run.input)
+        let prompt = PromptExtractor.from(run.input)
 
         for item in media {
             let kind = mapKind(item.kind)
@@ -461,20 +526,6 @@ final class AppState: ObservableObject {
         case .audio: return .audio
         case .file: return .file
         }
-    }
-
-    /// Best-effort: pull a "prompt" out of the request body so the gallery
-    /// has something to display / search on. Tries a handful of common
-    /// fal field names.
-    private static func extractPrompt(from input: JSONValue) -> String? {
-        guard case .object(let dict) = input else { return nil }
-        let candidates = ["prompt", "text", "input", "description", "query"]
-        for key in candidates {
-            if case .string(let s) = dict[key] ?? .null, !s.isEmpty {
-                return s
-            }
-        }
-        return nil
     }
 
     /// Cancel an in-flight run: server-side via PUT, and locally stop polling.

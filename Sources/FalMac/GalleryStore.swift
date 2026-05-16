@@ -54,8 +54,11 @@ final class GalleryStore: ObservableObject {
         } else {
             self.folder = defaultFolder
         }
-        // Default ON when the key has never been set.
-        self.autoDownload = (UserDefaults.standard.object(forKey: "autoDownload") as? Bool) ?? true
+        // Default OFF — auto-saving every generation is a strong default to
+        // opt people into. Settings → Gallery → "Auto-save generated media"
+        // toggles it on. Even when off, the per-asset "Save to Gallery"
+        // button on each output card always works.
+        self.autoDownload = (UserDefaults.standard.object(forKey: "autoDownload") as? Bool) ?? false
         ensureFolder()
         loadIndex()
     }

@@ -18,12 +18,16 @@ struct ModelListView: View {
 
                 // Curated top-level filters. "Audio" / "Image" / "Video"
                 // fan out to multiple fal categories and merge results.
+                // "Favorites" is a client-side view of starred models.
                 Picker("Category", selection: Binding(
                     get: { state.selectedCategory ?? "" },
                     set: { newVal in
                         state.selectedCategory = newVal.isEmpty ? nil : newVal
                         Task { await state.loadModels() }
                     })) {
+                        Label("Favorites (\(state.favorites.count))", systemImage: "star.fill")
+                            .tag(AppState.favoritesFilterName)
+                        Divider()
                         Text("All categories").tag("")
                         Divider()
                         ForEach(AppState.categoryFilters, id: \.name) { filter in
@@ -86,24 +90,44 @@ struct ModelListView: View {
 
 private struct ModelRow: View {
     let model: FalModelSummary
+    @EnvironmentObject var state: AppState
+
+    private var isFavorite: Bool { state.isFavorite(model.endpointId) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(model.displayName).font(.headline).lineLimit(1)
-            Text(model.endpointId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            if let cat = model.category {
-                HStack(spacing: 4) {
-                    Text(cat)
-                        .font(.caption2.weight(.medium))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.secondary.opacity(0.15), in: Capsule())
-                    if model.status == "deprecated" {
-                        Text("deprecated")
-                            .font(.caption2)
+        HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName).font(.headline).lineLimit(1)
+                Text(model.endpointId).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let cat = model.category {
+                    HStack(spacing: 4) {
+                        Text(cat)
+                            .font(.caption2.weight(.medium))
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(.orange.opacity(0.2), in: Capsule())
+                            .background(.secondary.opacity(0.15), in: Capsule())
+                        if model.status == "deprecated" {
+                            Text("deprecated")
+                                .font(.caption2)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(.orange.opacity(0.2), in: Capsule())
+                        }
                     }
                 }
             }
+            Spacer(minLength: 0)
+            // Star toggle. .plain so the row tap-target is still the sidebar
+            // selection — only the star itself is clickable.
+            Button {
+                state.toggleFavorite(model)
+            } label: {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .font(.system(size: 13))
+                    .foregroundStyle(isFavorite ? Color.yellow : .secondary)
+                    .contentShape(Rectangle())
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
         }
         .padding(.vertical, 2)
     }

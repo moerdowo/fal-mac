@@ -225,7 +225,12 @@ struct RunCardView: View {
                     JSONOutputView(json: output)
                 } else {
                     ForEach(media) { item in
-                        MediaItemView(item: item)
+                        MediaItemView(
+                            item: item,
+                            modelDisplayName: run.displayName,
+                            modelEndpoint: run.endpointId,
+                            prompt: PromptExtractor.from(run.input)
+                        )
                     }
                     DisclosureGroup("Raw response") {
                         JSONOutputView(json: output)
@@ -418,14 +423,32 @@ enum MediaScanner {
 
 struct MediaItemView: View {
     let item: MediaItem
+    /// Context for "Save to Gallery" — origin model + prompt are stored on
+    /// the GalleryItem so the Gallery view can filter / search on them.
+    /// Default empty for any future call sites without a run context.
+    var modelDisplayName: String = ""
+    var modelEndpoint: String = ""
+    var prompt: String? = nil
+
     @EnvironmentObject var state: AppState
+    @ObservedObject private var gallery: GalleryStore = .shared
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showImagePreview = false
     @State private var showVideoPreview = false
+    @State private var galleryState: GalleryState = .idle
+
+    enum GalleryState { case idle, saving, saved }
 
     private var canExpand: Bool {
         item.kind == .image || item.kind == .video
+    }
+
+    /// True if this URL is already in the gallery index — keeps the button
+    /// in "Saved" state across re-renders without needing local state to
+    /// remember.
+    private var alreadyInGallery: Bool {
+        gallery.items.contains { $0.originalURL == item.url.absoluteString }
     }
 
     var body: some View {
@@ -486,6 +509,30 @@ struct MediaItemView: View {
                 }
                 .buttonStyle(.glass)
                 .controlSize(.small)
+
+                // Save to Gallery — manual counterpart to the auto-download
+                // toggle. Adds to the persistent GalleryStore index so the
+                // file shows up in the Gallery window.
+                Button { saveToGallery() } label: {
+                    switch galleryState {
+                    case .idle where alreadyInGallery:
+                        Label("In Gallery", systemImage: "checkmark.circle.fill")
+                    case .idle:
+                        Label("Save to Gallery", systemImage: "tray.and.arrow.down")
+                    case .saving:
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.small)
+                            Text("Saving…")
+                        }
+                    case .saved:
+                        Label("Saved", systemImage: "checkmark")
+                    }
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .disabled(galleryState == .saving || alreadyInGallery)
+                .help("Save a copy to the Gallery (\(gallery.folder.lastPathComponent))")
+
                 Button { save() } label: {
                     if isSaving {
                         HStack(spacing: 4) {
@@ -539,6 +586,46 @@ struct MediaItemView: View {
                 }
             }
         }
+    }
+
+    private func saveToGallery() {
+        guard galleryState == .idle, !alreadyInGallery else { return }
+        galleryState = .saving
+        let kind: GalleryItem.Kind = {
+            switch item.kind {
+            case .image: return .image
+            case .video: return .video
+            case .audio: return .audio
+            case .file: return .file
+            }
+        }()
+        Task {
+            _ = await GalleryStore.shared.ingest(
+                url: item.url,
+                kind: kind,
+                modelDisplayName: modelDisplayName.isEmpty ? "Manual save" : modelDisplayName,
+                modelEndpoint: modelEndpoint,
+                prompt: prompt
+            )
+            await MainActor.run { galleryState = .saved }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run { galleryState = .idle }
+        }
+    }
+}
+
+/// Best-effort extraction of a prompt-shaped string from a run's input
+/// body. Mirrors what AppState's auto-ingest uses, exposed here so the
+/// Save-to-Gallery button can supply the same metadata.
+enum PromptExtractor {
+    static func from(_ input: JSONValue) -> String? {
+        guard case .object(let dict) = input else { return nil }
+        for key in ["prompt", "text", "input", "description", "query"] {
+            if case .string(let s) = dict[key] ?? .null, !s.isEmpty {
+                return s
+            }
+        }
+        return nil
     }
 }
 

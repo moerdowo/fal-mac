@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - DTOs
 
-struct FalModelSummary: Identifiable, Hashable {
+struct FalModelSummary: Identifiable, Hashable, Codable {
     var endpointId: String
     var displayName: String
     var category: String?
