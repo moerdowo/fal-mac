@@ -58,6 +58,12 @@ struct FalMacApp: App {
         }
         .defaultSize(width: 900, height: 620)
 
+        WindowGroup("Spend", id: "spend") {
+            SpendView()
+                .environmentObject(state)
+        }
+        .defaultSize(width: 720, height: 560)
+
         // ⌘, is wired automatically when a Settings scene exists.
         Settings {
             SettingsView()

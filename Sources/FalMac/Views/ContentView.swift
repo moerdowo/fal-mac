@@ -45,6 +45,14 @@ private struct Toolbar: ToolbarContent {
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
+                openWindow(id: "spend")
+            } label: {
+                Label("Spend", systemImage: "chart.line.uptrend.xyaxis")
+            }
+            .help("Open the spend dashboard")
+            .keyboardShortcut("$", modifiers: [.command, .shift])
+
+            Button {
                 openWindow(id: "gallery")
             } label: {
                 Label("Gallery", systemImage: "photo.stack")

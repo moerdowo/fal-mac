@@ -523,6 +523,13 @@ struct MediaItemView: View {
                 .buttonStyle(.glass)
                 .controlSize(.small)
 
+                // Pipeline: send this URL into another model's URL-shaped
+                // input. Menu lists recents + favorites first, then a
+                // "Choose…" option falling through to the full catalog.
+                if item.kind == .image || item.kind == .video || item.kind == .audio {
+                    SendToModelMenu(url: item.url)
+                }
+
                 // Save to Gallery — manual counterpart to the auto-download
                 // toggle. Adds to the persistent GalleryStore index so the
                 // file shows up in the Gallery window.
@@ -624,6 +631,50 @@ struct MediaItemView: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             await MainActor.run { galleryState = .idle }
         }
+    }
+}
+
+/// Menu for sending an output URL into another model as input. Lists
+/// recents + favorites for one-click chaining, plus a "From catalog…"
+/// submenu for the full list.
+struct SendToModelMenu: View {
+    let url: URL
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        Menu {
+            if !state.recents.isEmpty {
+                Section("Recents") {
+                    ForEach(state.recents) { m in
+                        Button(m.displayName) { send(to: m) }
+                    }
+                }
+            }
+            if !state.favorites.isEmpty {
+                Section("Favorites") {
+                    ForEach(Array(state.favorites.values).sorted(by: { $0.displayName < $1.displayName })) { m in
+                        Button(m.displayName) { send(to: m) }
+                    }
+                }
+            }
+            if !state.allModels.isEmpty {
+                Section("From catalog") {
+                    ForEach(state.allModels.prefix(20)) { m in
+                        Button(m.displayName) { send(to: m) }
+                    }
+                }
+            }
+        } label: {
+            Label("Use as input", systemImage: "arrow.right.square")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.glass)
+        .controlSize(.small)
+        .help("Send this URL into another model's URL-shaped input field")
+    }
+
+    private func send(to model: FalModelSummary) {
+        Task { await state.sendToModel(url, modelEndpointId: model.endpointId, modelDisplayName: model.displayName) }
     }
 }
 

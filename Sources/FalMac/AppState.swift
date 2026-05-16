@@ -39,8 +39,60 @@ struct RunRecord: Identifiable, Equatable, Codable {
 
 @MainActor
 final class AppState: ObservableObject {
-    // Settings
-    @Published var apiKey: String = Keychain.get("api_key") ?? ""
+    // Settings — multi-profile API keys.
+    @Published var apiProfiles: [String] = AppState.bootProfiles()
+    @Published var activeProfile: String = AppState.bootActiveProfile() {
+        didSet { onProfileChanged() }
+    }
+    @Published var apiKey: String = Keychain.get(AppState.bootActiveProfile()) ?? ""
+
+    private static func bootProfiles() -> [String] {
+        // Run migration once at startup, then list profiles.
+        _ = Keychain.migrateLegacyIfNeeded()
+        return Keychain.allProfiles()
+    }
+
+    private static func bootActiveProfile() -> String {
+        let stored = UserDefaults.standard.string(forKey: "activeProfile")
+        let known = Keychain.allProfiles()
+        if let stored, known.contains(stored) { return stored }
+        return known.first ?? "Default"
+    }
+
+    private func onProfileChanged() {
+        UserDefaults.standard.set(activeProfile, forKey: "activeProfile")
+        apiKey = Keychain.get(activeProfile) ?? ""
+        // Refresh dependent state for the new key.
+        Task {
+            await loadModels()
+            await refreshBalance()
+        }
+    }
+
+    /// Add or update a profile's key. If the name is new, switch to it.
+    func setKey(_ key: String, for profile: String) {
+        let trimmed = profile.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Keychain.set(key, account: trimmed)
+        if !apiProfiles.contains(trimmed) {
+            apiProfiles.append(trimmed)
+            apiProfiles.sort()
+        }
+        if activeProfile == trimmed {
+            apiKey = key
+        } else {
+            activeProfile = trimmed
+        }
+    }
+
+    /// Remove a profile (and its key from the keychain).
+    func deleteProfile(_ profile: String) {
+        Keychain.remove(profile)
+        apiProfiles.removeAll { $0 == profile }
+        if activeProfile == profile {
+            activeProfile = apiProfiles.first ?? "Default"
+        }
+    }
     @Published var defaultDownloadFolder: URL? = {
         if let s = UserDefaults.standard.string(forKey: "downloadFolder") {
             return URL(fileURLWithPath: s)
@@ -179,6 +231,40 @@ final class AppState: ObservableObject {
         PromptLibrary.save(savedPrompts)
     }
 
+    /// Pipeline-style "send this URL to another model". Switches the
+    /// selected model and, once its schema loads, drops the URL into the
+    /// first URL-shaped field (e.g. `image_url`).
+    func sendToModel(_ url: URL, modelEndpointId: String, modelDisplayName: String) async {
+        let summary = FalModelSummary(
+            endpointId: modelEndpointId,
+            displayName: modelDisplayName,
+            category: nil,
+            description: nil,
+            tags: [],
+            status: nil
+        )
+        await selectModel(summary)
+        // Wait briefly for schema load if needed.
+        var spins = 0
+        while schema == nil, spins < 40 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            spins += 1
+        }
+        guard let schema else { return }
+        // Find the first URL-shaped property.
+        let urlField = schema.properties.first { prop in
+            let n = prop.name.lowercased()
+            return prop.format == "uri"
+                || n.hasSuffix("_url")
+                || ["image", "audio", "video", "input_image", "init_image",
+                    "mask", "mask_image", "reference_image", "source_image",
+                    "control_image", "ip_adapter_image", "face_image"].contains(n)
+        }
+        if let urlField {
+            formValues[urlField.name] = .string(url.absoluteString)
+        }
+    }
+
     func applyPrompt(_ prompt: SavedPrompt) {
         // Write into whichever string field looks like the prompt slot.
         for key in ["prompt", "text", "input", "description"] {
@@ -255,12 +341,16 @@ final class AppState: ObservableObject {
 
     // MARK: - API key
 
+    /// Legacy single-key setter — stores under the currently-active profile.
     func saveAPIKey(_ key: String) {
-        apiKey = key
+        let profile = activeProfile.isEmpty ? "Default" : activeProfile
         if key.isEmpty {
-            Keychain.remove("api_key")
+            // Empty key — clear out without deleting the profile so the user
+            // can paste a new one in the same slot.
+            apiKey = ""
+            Keychain.remove(profile)
         } else {
-            Keychain.set(key, account: "api_key")
+            setKey(key, for: profile)
         }
     }
 
@@ -519,6 +609,8 @@ final class AppState: ObservableObject {
     /// Submits + polls a single run. All mutation happens via `updateRun`
     /// so polling Tasks for different runs don't collide.
     private func execute(runId: UUID, endpointId: String, body: JSONValue) async {
+        // Snapshot balance before submit so we can compute cost after.
+        let balanceBefore = balance
         do {
             let submitted = try await FalAPI.shared.submit(endpointId: endpointId, body: body)
             updateRun(runId) {
@@ -638,8 +730,20 @@ final class AppState: ObservableObject {
             }
         }
         runTasks[runId] = nil
-        // Each completed run may have consumed credits.
-        Task { await refreshBalance() }
+
+        // Each completed run may have consumed credits. Refresh, then
+        // attribute the delta to this run's cost field.
+        Task {
+            await refreshBalance()
+            if let before = balanceBefore, let after = balance {
+                let delta = before - after
+                // Only record positive deltas (negative deltas can happen if
+                // the user topped up between snapshot and post-refresh).
+                if delta > 0.000001 {
+                    updateRun(runId) { $0.cost = delta }
+                }
+            }
+        }
     }
 
     /// Apply a mutation to the run record matching `id`. Lookups by id remain
