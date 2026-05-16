@@ -352,7 +352,15 @@ struct JSONOutputView: View {
 }
 
 struct MediaItem: Identifiable, Hashable {
-    let id = UUID()
+    /// Use the URL as identity — `MediaScanner.scan` already de-dupes by
+    /// URL, so this is unique within a single response. Critically, this
+    /// keeps the id *stable across re-renders*. The previous `UUID()`
+    /// default produced a fresh id every time `scan()` ran, which it does
+    /// on every body invocation. When a sibling run's polling tick caused
+    /// the queue view to re-evaluate, ForEach saw new ids, tore down each
+    /// MediaItemView, and the ImageMediaView's @State showingPreview
+    /// flipped back to false — closing any open image-preview sheet.
+    var id: URL { url }
     let url: URL
     let kind: Kind
     let label: String?
