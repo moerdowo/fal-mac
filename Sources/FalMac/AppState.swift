@@ -141,6 +141,15 @@ final class AppState: ObservableObject {
     @Published var balance: Double?
     @Published var balanceLoading = false
     @Published var balanceError: String?
+    /// Rolling baseline for cost attribution — the post-balance after the
+    /// most recently-attributed run. Each completed run's cost is
+    /// `lastBalanceForCost - currentBalance`, then this is rolled forward.
+    /// Initialised the first time refreshBalance succeeds.
+    private var lastBalanceForCost: Double?
+    /// Serial chain of attribution tasks. Each new run's attribution waits
+    /// for the previous one to finish so concurrent runs don't trample the
+    /// rolling baseline.
+    private var costAttributionTask: Task<Void, Never>?
 
     /// Starred models, keyed by endpoint ID. Caches the full summary so the
     /// Favorites filter can render the list without any API call — including
@@ -372,7 +381,15 @@ final class AppState: ObservableObject {
         balanceError = nil
         defer { balanceLoading = false }
         do {
-            balance = try await FalAPI.shared.balance()
+            let fresh = try await FalAPI.shared.balance()
+            balance = fresh
+            // Initialise the cost-tracking baseline the first time we see
+            // a real balance. Subsequent updates only roll the baseline
+            // forward from inside attributeCost so a manual refresh
+            // doesn't accidentally wipe an unattributed debit.
+            if lastBalanceForCost == nil {
+                lastBalanceForCost = fresh
+            }
         } catch {
             balanceError = error.localizedDescription
         }
@@ -609,8 +626,12 @@ final class AppState: ObservableObject {
     /// Submits + polls a single run. All mutation happens via `updateRun`
     /// so polling Tasks for different runs don't collide.
     private func execute(runId: UUID, endpointId: String, body: JSONValue) async {
-        // Snapshot balance before submit so we can compute cost after.
-        let balanceBefore = balance
+        // Ensure the cost-attribution baseline is initialised before the
+        // run starts — first-launch races used to leave it nil and skip
+        // cost recording entirely. Cheap if balance is already known.
+        if lastBalanceForCost == nil {
+            await refreshBalance()
+        }
         do {
             let submitted = try await FalAPI.shared.submit(endpointId: endpointId, body: body)
             updateRun(runId) {
@@ -731,19 +752,39 @@ final class AppState: ObservableObject {
         }
         runTasks[runId] = nil
 
-        // Each completed run may have consumed credits. Refresh, then
-        // attribute the delta to this run's cost field.
-        Task {
-            await refreshBalance()
-            if let before = balanceBefore, let after = balance {
-                let delta = before - after
-                // Only record positive deltas (negative deltas can happen if
-                // the user topped up between snapshot and post-refresh).
-                if delta > 0.000001 {
-                    updateRun(runId) { $0.cost = delta }
-                }
-            }
+        // Each completed run may have consumed credits — but only if the
+        // run actually got to the server. No point attributing for a run
+        // that errored before submit.
+        guard let idx = runs.firstIndex(where: { $0.id == runId }),
+              runs[idx].requestId != nil else { return }
+        scheduleCostAttribution(for: runId)
+    }
+
+    /// Chains cost-attribution tasks so concurrent runs don't all race to
+    /// read the post-balance at once. Each new attribution waits for the
+    /// previous one to finish, then rolls the baseline forward.
+    private func scheduleCostAttribution(for runId: UUID) {
+        let prev = costAttributionTask
+        costAttributionTask = Task { [weak self] in
+            await prev?.value
+            await self?.attributeCost(for: runId)
         }
+    }
+
+    /// Refresh balance, compute the delta from the rolling baseline, and
+    /// record it as this run's cost. The settle delay gives fal's billing
+    /// (eventually consistent) time to debit before we read.
+    private func attributeCost(for runId: UUID) async {
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        await refreshBalance()
+        guard let base = lastBalanceForCost,
+              let after = balance else { return }
+        let delta = base - after
+        // Negative delta = user topped up, ignore. Sub-cent rounding noise
+        // also ignored.
+        guard delta > 0.000001 else { return }
+        updateRun(runId) { $0.cost = delta }
+        lastBalanceForCost = after
     }
 
     /// Apply a mutation to the run record matching `id`. Lookups by id remain
