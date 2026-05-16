@@ -98,19 +98,21 @@ private struct BalanceChip: View {
         }
     }
 
-    /// Status-driven tint for the glass pill.
+    /// Status-driven tint. Healthy balances render as plain glass with no
+    /// tint — only attention-grabbing states (error / low balance) carry
+    /// colour.
     private var tint: Color? {
         if state.apiKey.isEmpty { return nil }
         if state.balanceError != nil && state.balance == nil { return .red }
         if let bal = state.balance, bal < 1 { return .orange }
-        return .green
+        return nil
     }
 
     private var foreground: Color {
         if state.apiKey.isEmpty { return .secondary }
         if state.balanceError != nil && state.balance == nil { return .red }
         if let bal = state.balance, bal < 1 { return .orange }
-        return .green
+        return .primary
     }
 
     private var helpText: String {

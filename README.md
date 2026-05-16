@@ -1,8 +1,16 @@
-# FalMac
+<p align="center">
+  <img src="icon.png" width="160" alt="FalMac icon" />
+</p>
 
-Native macOS SwiftUI app for [fal.ai](https://fal.ai). Paste your API key, browse the full model catalog, fill in a form that's generated **from each model's own OpenAPI schema**, and view/save the resulting images, video, audio, or text.
+<h1 align="center">FalMac</h1>
 
-![arch](https://img.shields.io/badge/SwiftUI-macOS%2026%2B-1f6feb) ![design](https://img.shields.io/badge/UI-Liquid%20Glass-9ad) ![status](https://img.shields.io/badge/single--file--build-✓-1f6feb)
+<p align="center">Native macOS SwiftUI app for <a href="https://fal.ai">fal.ai</a>. Paste your API key, browse the full model catalog, fill in a form that's generated <strong>from each model's own OpenAPI schema</strong>, and view/save the resulting images, video, audio, or text.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/SwiftUI-macOS%2026%2B-1f6feb" alt="macOS 26+" />
+  <img src="https://img.shields.io/badge/UI-Liquid%20Glass-9ad" alt="Liquid Glass" />
+  <img src="https://img.shields.io/badge/single--file--build-✓-1f6feb" alt="single file build" />
+</p>
 
 ## Features
 
