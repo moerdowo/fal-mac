@@ -219,7 +219,17 @@ private struct StringField: View {
     }
 
     private var isURL: Bool {
-        node.format == "uri" || node.name.lowercased().hasSuffix("_url") || node.name.lowercased().contains("image_url") || node.name.lowercased().contains("audio_url") || node.name.lowercased().contains("video_url")
+        if node.format == "uri" { return true }
+        let n = node.name.lowercased()
+        if n.hasSuffix("_url") { return true }
+        // Common bare names for upload-able fields used by /edit, ControlNet,
+        // i2v, etc. ("image_url" is already covered by the _url suffix above).
+        let bareNames: Set<String> = [
+            "image", "audio", "video", "input_image", "init_image",
+            "mask", "mask_image", "reference_image", "source_image",
+            "control_image", "ip_adapter_image", "face_image"
+        ]
+        return bareNames.contains(n)
     }
 
     var body: some View {
@@ -296,8 +306,155 @@ private struct ArrayField: View {
     let node: SchemaNode
     @Binding var value: JSONValue
     @State private var rawText: String = ""
+    @State private var newURL: String = ""
+    @State private var isUploading = false
+    @State private var uploadError: String?
+
+    /// Schema of each item if known. fal arrays we care about (image_urls,
+    /// loras, etc.) have a single resolved items schema.
+    private var itemNode: SchemaNode? { node.items.first }
+    private var isStringItemArray: Bool { itemNode?.type == .string }
+
+    /// Names that strongly imply "list of file URLs" — show upload UI.
+    private var isUploadableArray: Bool {
+        if itemNode?.format == "uri" { return true }
+        let n = node.name.lowercased()
+        let triggers = ["image", "audio", "video", "mask", "file", "url", "reference", "input"]
+        return triggers.contains { n.contains($0) }
+    }
+
+    private var isImageArray: Bool {
+        let n = node.name.lowercased()
+        return n.contains("image") || n.contains("mask") || n.contains("reference") || n.contains("photo")
+    }
+
+    private var items: [String] {
+        if case .array(let arr) = value { return arr.compactMap { $0.stringValue } }
+        return []
+    }
+
+    private func setItems(_ next: [String]) {
+        value = next.isEmpty ? .null : .array(next.map { .string($0) })
+    }
 
     var body: some View {
+        if isStringItemArray {
+            stringArrayEditor
+        } else {
+            jsonEditor
+        }
+    }
+
+    // MARK: list-of-strings editor with optional upload
+
+    @ViewBuilder
+    private var stringArrayEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !items.isEmpty {
+                ForEach(Array(items.enumerated()), id: \.offset) { idx, url in
+                    HStack(spacing: 8) {
+                        if isImageArray, let u = URL(string: url), u.scheme?.hasPrefix("http") == true {
+                            AsyncImage(url: u) { phase in
+                                switch phase {
+                                case .success(let img): img.resizable().scaledToFill()
+                                default: Color.gray.opacity(0.15)
+                                }
+                            }
+                            .frame(width: 36, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        Text(url)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            var next = items; next.remove(at: idx); setItems(next)
+                        } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove")
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+
+            HStack(spacing: 6) {
+                TextField(isUploadableArray ? "https:// URL…" : "Add value…", text: $newURL)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addManual() }
+                Button { addManual() } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.bordered)
+                .disabled(newURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if isUploadableArray {
+                    Button {
+                        pickAndUpload()
+                    } label: {
+                        if isUploading {
+                            HStack(spacing: 4) {
+                                ProgressView().controlSize(.small)
+                                Text("Uploading…")
+                            }
+                        } else {
+                            Label(isImageArray ? "Upload image…" : "Upload file…",
+                                  systemImage: "arrow.up.doc")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isUploading)
+                }
+            }
+
+            if let err = uploadError {
+                Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
+            }
+        }
+    }
+
+    private func addManual() {
+        let trimmed = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        setItems(items + [trimmed])
+        newURL = ""
+    }
+
+    private func pickAndUpload() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        if panel.runModal() != .OK { return }
+        let chosen = panel.urls
+        guard !chosen.isEmpty else { return }
+        isUploading = true
+        uploadError = nil
+        Task {
+            do {
+                var current = items
+                for u in chosen {
+                    let result = try await FalAPI.shared.uploadFile(u)
+                    current.append(result)
+                    await MainActor.run { setItems(current) }
+                }
+                await MainActor.run { isUploading = false }
+            } catch {
+                await MainActor.run {
+                    uploadError = error.localizedDescription
+                    isUploading = false
+                }
+            }
+        }
+    }
+
+    // MARK: fallback JSON editor (non-string arrays, e.g. arrays of objects)
+
+    @ViewBuilder
+    private var jsonEditor: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Enter as JSON (e.g. [\"a\", \"b\"])")
                 .font(.caption).foregroundStyle(.secondary)
@@ -319,8 +476,8 @@ private struct ArrayField: View {
                 .font(.system(.body, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(6)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.tertiary))
+                .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.3)))
         }
     }
 }
