@@ -3,8 +3,8 @@ import SwiftUI
 
 /// A single completed (or in-flight) run, kept in-memory for the session and
 /// rendered in History.
-struct RunRecord: Identifiable, Equatable {
-    let id = UUID()
+struct RunRecord: Identifiable, Equatable, Codable {
+    var id = UUID()
     let endpointId: String
     let displayName: String
     var requestId: String?
@@ -26,6 +26,15 @@ struct RunRecord: Identifiable, Equatable {
     /// Counter for transient polling errors. Surfaced in the UI so the user
     /// can see we're retrying rather than silently stuck.
     var transientRetries: Int = 0
+    /// USD spent on this run — captured post-completion as the delta of the
+    /// account balance between submit and the post-completion refresh.
+    /// Nil while running, or if balance wasn't available either side.
+    var cost: Double?
+
+    /// True for runs that are in a terminal state and worth persisting.
+    var isTerminal: Bool {
+        status == .COMPLETED || status == .FAILED
+    }
 }
 
 @MainActor
@@ -64,8 +73,11 @@ final class AppState: ObservableObject {
 
     /// All runs (newest first). Active + completed all live here so the
     /// queue panel can render them as a single stack. The polling Task for
-    /// each active run mutates its entry in-place by `id`.
-    @Published var runs: [RunRecord] = []
+    /// each active run mutates its entry in-place by `id`. Completed /
+    /// failed runs are persisted via RunStore so the queue survives
+    /// restarts (in-flight runs aren't restored — the polling Tasks are
+    /// gone, so we drop them on load).
+    @Published var runs: [RunRecord] = RunStore.load()
     /// Per-run polling tasks so we can cancel them when the user dismisses
     /// or clears the queue.
     private var runTasks: [UUID: Task<Void, Never>] = [:]
@@ -84,6 +96,35 @@ final class AppState: ObservableObject {
     /// to favorited models only. Lives outside the regular categoryFilters
     /// list so it can be rendered as its own picker section.
     static let favoritesFilterName = "Favorites"
+
+    /// Last N endpoint IDs the user actually ran. Surfaced as a "Recents"
+    /// section at the top of the sidebar. Capped at 8 entries.
+    @Published private(set) var recents: [FalModelSummary] = AppState.loadRecents()
+
+    private static let recentsUDKey = "recentModels"
+    private static let recentsLimit = 8
+
+    private func recordRecent(_ summary: FalModelSummary) {
+        // Move-to-front behaviour: drop any existing entry, prepend, cap.
+        var updated = recents.filter { $0.endpointId != summary.endpointId }
+        updated.insert(summary, at: 0)
+        if updated.count > Self.recentsLimit { updated = Array(updated.prefix(Self.recentsLimit)) }
+        recents = updated
+        Self.saveRecents(updated)
+    }
+
+    private static func loadRecents() -> [FalModelSummary] {
+        guard let data = UserDefaults.standard.data(forKey: recentsUDKey),
+              let decoded = try? JSONDecoder().decode([FalModelSummary].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    private static func saveRecents(_ list: [FalModelSummary]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: recentsUDKey)
+    }
 
     // MARK: - Favorites
 
@@ -307,11 +348,42 @@ final class AppState: ObservableObject {
 
     // MARK: - Submit + poll (parallel queue)
 
+    /// Submit the current form again with the inputs of an existing run.
+    /// Used by the "Run again" / "Tweak again" buttons on each run card.
+    /// `loadIntoForm` repopulates the form before submitting, so the user
+    /// can edit before pressing run on the second variant.
+    func rerun(_ run: RunRecord, loadIntoForm: Bool = false) {
+        // If the user is on a different model right now, switch first.
+        if selectedModelId != run.endpointId {
+            Task {
+                let model = FalModelSummary(
+                    endpointId: run.endpointId,
+                    displayName: run.displayName,
+                    category: nil,
+                    description: nil,
+                    tags: [],
+                    status: nil
+                )
+                await selectModel(model)
+                if case .object(let dict) = run.input {
+                    formValues = dict
+                }
+                if !loadIntoForm { self.run() }
+            }
+            return
+        }
+        if case .object(let dict) = run.input {
+            formValues = dict
+        }
+        if !loadIntoForm { self.run() }
+    }
+
     /// Fire-and-forget. Adds a new run to the top of the queue and spawns its
     /// own Task to submit + poll. The form is immediately ready to submit
     /// again — multiple concurrent runs are supported.
     func run() {
         guard let model = selectedModel, let schema = schema else { return }
+        recordRecent(model)
 
         // Strip null/empty values; the API rejects extraneous keys for some models.
         var body: [String: JSONValue] = [:]
@@ -491,9 +563,14 @@ final class AppState: ObservableObject {
 
     /// Apply a mutation to the run record matching `id`. Lookups by id remain
     /// correct even when array order shifts (it doesn't, but defensive).
+    /// Persists the updated list whenever the run transitions to terminal.
     private func updateRun(_ id: UUID, _ mutator: (inout RunRecord) -> Void) {
         guard let idx = runs.firstIndex(where: { $0.id == id }) else { return }
+        let wasTerminalBefore = runs[idx].isTerminal
         mutator(&runs[idx])
+        if !wasTerminalBefore, runs[idx].isTerminal {
+            RunStore.save(runs)
+        }
     }
 
     /// After a run completes, scan its output JSON for media URLs and push
@@ -558,6 +635,7 @@ final class AppState: ObservableObject {
             }
         }
         runs.removeAll { $0.id == id }
+        RunStore.save(runs)
     }
 
     /// Cancel every active run, then empty the queue.
@@ -571,6 +649,7 @@ final class AppState: ObservableObject {
         }
         runTasks.removeAll()
         runs.removeAll()
+        RunStore.save(runs)
     }
 
     /// True when at least one run is still in queue / running.

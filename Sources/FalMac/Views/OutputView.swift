@@ -178,6 +178,19 @@ struct RunCardView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Cancel this run")
+            } else {
+                // Quick-rerun affordances appear only on terminal cards.
+                Menu {
+                    Button("Run again") { state.rerun(run, loadIntoForm: false) }
+                    Button("Tweak in form…") { state.rerun(run, loadIntoForm: true) }
+                } label: {
+                    Image(systemName: "arrow.counterclockwise.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Run again with the same inputs, or load into the form to tweak")
             }
             Button {
                 state.removeRun(run.id)

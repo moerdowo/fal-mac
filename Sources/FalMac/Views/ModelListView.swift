@@ -59,11 +59,24 @@ struct ModelListView: View {
                 List(selection: Binding(
                     get: { state.selectedModelId },
                     set: { newId in
-                        if let id = newId, let model = state.allModels.first(where: { $0.endpointId == id }) {
+                        if let id = newId,
+                           let model = state.allModels.first(where: { $0.endpointId == id })
+                                     ?? state.recents.first(where: { $0.endpointId == id }) {
                             Task { await state.selectModel(model) }
                         }
                     })
                 ) {
+                    // Recents — only show when not already filtering by
+                    // Favorites (which is itself a curated list).
+                    if !state.recents.isEmpty, state.selectedCategory != AppState.favoritesFilterName {
+                        Section("Recents") {
+                            ForEach(state.recents) { model in
+                                ModelRow(model: model)
+                                    .tag(model.endpointId)
+                            }
+                        }
+                    }
+
                     ForEach(state.allModels) { model in
                         ModelRow(model: model)
                             .tag(model.endpointId)

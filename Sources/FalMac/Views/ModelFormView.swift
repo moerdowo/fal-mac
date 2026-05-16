@@ -44,15 +44,57 @@ struct ModelFormView: View {
     @ViewBuilder
     private var header: some View {
         if let m = state.selectedModel {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(m.displayName).font(.title3.weight(.semibold))
-                Text(m.endpointId).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(m.endpointId).font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        if let url = URL(string: "https://fal.ai/models/\(m.endpointId)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open model page on fal.ai")
+                }
+
+                // Short description from the catalog metadata (if any).
                 if let d = m.description, !d.isEmpty {
                     Text(d).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                }
+
+                // About panel — full description from the OpenAPI doc when
+                // available. Collapsed by default so the form stays compact.
+                if let about = aboutText, !about.isEmpty {
+                    DisclosureGroup("About this model") {
+                        ScrollView {
+                            Text(about)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 6)
+                        }
+                        .frame(maxHeight: 220)
+                    }
+                    .font(.callout.weight(.medium))
                 }
             }
             .padding(16)
         }
+    }
+
+    /// Pull the long-form description out of the OpenAPI document. fal puts
+    /// it at `info.description`, often the same markdown shown on
+    /// fal.ai/models/<endpoint>.
+    private var aboutText: String? {
+        guard let raw = state.schemaRaw?.objectValue,
+              let info = raw["info"]?.objectValue,
+              let desc = info["description"]?.stringValue,
+              !desc.isEmpty else { return nil }
+        return desc
     }
 
     @ViewBuilder
