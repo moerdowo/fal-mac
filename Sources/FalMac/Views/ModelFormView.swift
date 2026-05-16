@@ -1,0 +1,391 @@
+import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
+
+struct ModelFormView: View {
+    @EnvironmentObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
+            Divider()
+
+            ScrollView {
+                if state.schemaLoading {
+                    HStack { Spacer(); ProgressView("Loading model schema…"); Spacer() }
+                        .padding()
+                } else if let err = state.schemaError {
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle").font(.title2)
+                        Text(err).font(.callout)
+                        Button("Retry") {
+                            guard let id = state.selectedModelId else { return }
+                            Task { await state.loadSchema(for: id) }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                } else if let schema = state.schema {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(schema.properties) { node in
+                            FieldView(node: node, valueBinding: state.binding(for: node.name))
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+
+            Divider()
+            footer
+        }
+    }
+
+    @ViewBuilder
+    private var header: some View {
+        if let m = state.selectedModel {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(m.displayName).font(.title3.weight(.semibold))
+                Text(m.endpointId).font(.caption).foregroundStyle(.secondary)
+                if let d = m.description, !d.isEmpty {
+                    Text(d).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        let isRunning = state.currentRun?.status == .IN_QUEUE || state.currentRun?.status == .IN_PROGRESS
+        HStack {
+            if isRunning {
+                Button(role: .destructive) {
+                    Task { await state.cancelCurrent() }
+                } label: {
+                    Label("Cancel", systemImage: "stop.fill")
+                }
+            }
+            Spacer()
+            Button {
+                Task { await state.run() }
+            } label: {
+                Label(isRunning ? "Running…" : "Run", systemImage: "play.fill")
+                    .frame(minWidth: 80)
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(isRunning || state.schema == nil || state.apiKey.isEmpty)
+        }
+        .padding(12)
+    }
+}
+
+// MARK: - Per-field rendering
+
+private struct FieldView: View {
+    let node: SchemaNode
+    @Binding var valueBinding: JSONValue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(node.title ?? node.name).font(.subheadline.weight(.semibold))
+                if node.isRequired {
+                    Text("required").font(.caption2).foregroundStyle(.orange)
+                }
+                Spacer()
+            }
+            control
+            if let d = node.description, !d.isEmpty {
+                Text(d).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        if let enums = node.enumValues, !enums.isEmpty {
+            EnumPicker(node: node, value: $valueBinding, options: enums)
+        } else if node.type == .boolean {
+            BoolField(value: $valueBinding, defaultValue: node.defaultValue?.boolValue ?? false)
+        } else if node.type == .integer || node.type == .number {
+            NumberField(node: node, value: $valueBinding)
+        } else if node.type == .string {
+            StringField(node: node, value: $valueBinding)
+        } else if node.type == .array {
+            ArrayField(node: node, value: $valueBinding)
+        } else if node.type == .object {
+            ObjectField(node: node, value: $valueBinding)
+        } else {
+            // Unknown — fall back to a JSON text field so power users can still pass it.
+            RawJSONField(value: $valueBinding)
+        }
+    }
+}
+
+private struct EnumPicker: View {
+    let node: SchemaNode
+    @Binding var value: JSONValue
+    let options: [JSONValue]
+
+    var body: some View {
+        Picker("", selection: Binding(
+            get: {
+                if case .null = value { return node.defaultValue?.displayString ?? options.first?.displayString ?? "" }
+                return value.displayString
+            },
+            set: { new in
+                if let match = options.first(where: { $0.displayString == new }) {
+                    value = match
+                }
+            })) {
+                ForEach(options.indices, id: \.self) { i in
+                    Text(options[i].displayString).tag(options[i].displayString)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+    }
+}
+
+private struct BoolField: View {
+    @Binding var value: JSONValue
+    let defaultValue: Bool
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { value.boolValue ?? defaultValue },
+            set: { value = .bool($0) }
+        )) {
+            EmptyView()
+        }
+        .toggleStyle(.switch)
+    }
+}
+
+private struct NumberField: View {
+    let node: SchemaNode
+    @Binding var value: JSONValue
+    @State private var text: String = ""
+
+    var body: some View {
+        let useSlider = node.minimum != nil && node.maximum != nil && node.type == .number
+        HStack {
+            TextField("", text: Binding(
+                get: {
+                    if !text.isEmpty { return text }
+                    switch value {
+                    case .int(let i): return String(i)
+                    case .double(let d): return String(d)
+                    case .null: return node.defaultValue?.displayString ?? ""
+                    default: return ""
+                    }
+                },
+                set: { newVal in
+                    text = newVal
+                    if newVal.isEmpty { value = .null; return }
+                    if node.type == .integer, let i = Int(newVal) { value = .int(i) }
+                    else if let d = Double(newVal) { value = .double(d) }
+                }))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: useSlider ? 80 : .infinity)
+
+            if useSlider, let lo = node.minimum, let hi = node.maximum {
+                Slider(value: Binding(
+                    get: {
+                        if let d = value.doubleValue { return d }
+                        if let d = node.defaultValue?.doubleValue { return d }
+                        return lo
+                    },
+                    set: { newVal in
+                        if node.type == .integer { value = .int(Int(newVal)) }
+                        else { value = .double(newVal) }
+                        text = ""
+                    }), in: lo...hi)
+            }
+        }
+    }
+}
+
+private struct StringField: View {
+    let node: SchemaNode
+    @Binding var value: JSONValue
+
+    private var isLongText: Bool {
+        // Prompts and similar fields tend to be multi-line.
+        let n = (node.name + (node.title ?? "")).lowercased()
+        return n.contains("prompt") || n.contains("text") || n.contains("description")
+    }
+
+    private var isURL: Bool {
+        node.format == "uri" || node.name.lowercased().hasSuffix("_url") || node.name.lowercased().contains("image_url") || node.name.lowercased().contains("audio_url") || node.name.lowercased().contains("video_url")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isLongText {
+                TextEditor(text: stringBinding)
+                    .frame(minHeight: 80, maxHeight: 200)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.tertiary))
+            } else {
+                TextField(node.title ?? node.name, text: stringBinding)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            if isURL {
+                HStack {
+                    Button {
+                        pickAndUpload()
+                    } label: {
+                        Label("Upload file…", systemImage: "arrow.up.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    if isUploading {
+                        ProgressView().controlSize(.small)
+                    }
+                    if let err = uploadError {
+                        Text(err).font(.caption).foregroundStyle(.red).lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    @State private var isUploading = false
+    @State private var uploadError: String?
+
+    private var stringBinding: Binding<String> {
+        Binding(
+            get: { value.stringValue ?? (node.defaultValue?.stringValue ?? "") },
+            set: { value = .string($0) }
+        )
+    }
+
+    private func pickAndUpload() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() != .OK { return }
+        guard let url = panel.url else { return }
+        isUploading = true
+        uploadError = nil
+        Task {
+            do {
+                let result = try await FalAPI.shared.uploadFile(url)
+                await MainActor.run {
+                    value = .string(result)
+                    isUploading = false
+                }
+            } catch {
+                await MainActor.run {
+                    uploadError = error.localizedDescription
+                    isUploading = false
+                }
+            }
+        }
+    }
+}
+
+private struct ArrayField: View {
+    let node: SchemaNode
+    @Binding var value: JSONValue
+    @State private var rawText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Enter as JSON (e.g. [\"a\", \"b\"])")
+                .font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: Binding(
+                get: {
+                    if !rawText.isEmpty { return rawText }
+                    if case .null = value { return "" }
+                    return value.prettyPrinted()
+                },
+                set: { newVal in
+                    rawText = newVal
+                    if newVal.isEmpty { value = .null; return }
+                    if let data = newVal.data(using: .utf8),
+                       let parsed = try? JSONDecoder().decode(JSONValue.self, from: data) {
+                        value = parsed
+                    }
+                }))
+                .frame(minHeight: 60, maxHeight: 120)
+                .font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.tertiary))
+        }
+    }
+}
+
+private struct ObjectField: View {
+    let node: SchemaNode
+    @Binding var value: JSONValue
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(node.properties) { child in
+                    let binding = Binding<JSONValue>(
+                        get: {
+                            guard case .object(let dict) = value else { return .null }
+                            return dict[child.name] ?? .null
+                        },
+                        set: { newVal in
+                            var dict: [String: JSONValue]
+                            if case .object(let d) = value { dict = d } else { dict = [:] }
+                            dict[child.name] = newVal
+                            value = .object(dict)
+                        }
+                    )
+                    FieldView(node: child, valueBinding: binding)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Text(node.title ?? node.name).font(.subheadline)
+        }
+    }
+}
+
+private struct RawJSONField: View {
+    @Binding var value: JSONValue
+    @State private var text: String = ""
+
+    var body: some View {
+        TextEditor(text: Binding(
+            get: { text.isEmpty ? (value == .null ? "" : value.prettyPrinted()) : text },
+            set: { newVal in
+                text = newVal
+                if newVal.isEmpty { value = .null; return }
+                if let data = newVal.data(using: .utf8),
+                   let parsed = try? JSONDecoder().decode(JSONValue.self, from: data) {
+                    value = parsed
+                }
+            }))
+            .frame(minHeight: 60, maxHeight: 160)
+            .font(.system(.body, design: .monospaced))
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.tertiary))
+    }
+}
+
+// MARK: - Binding helper
+
+extension AppState {
+    func binding(for key: String) -> Binding<JSONValue> {
+        Binding(
+            get: { self.formValues[key] ?? .null },
+            set: { self.formValues[key] = $0 }
+        )
+    }
+}
