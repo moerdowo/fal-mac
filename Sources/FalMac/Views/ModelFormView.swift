@@ -99,32 +99,180 @@ struct ModelFormView: View {
 
     @ViewBuilder
     private var footer: some View {
-        HStack {
-            if state.hasActiveRuns {
-                Label("\(activeCount) running", systemImage: "circle.dotted")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .glassEffect(.regular, in: .capsule)
+        VStack(spacing: 8) {
+            // Presets + prompt library row.
+            HStack(spacing: 6) {
+                PresetMenu()
+                PromptLibraryMenu()
+                Spacer()
+                // Batch count stepper — submit the form N times.
+                BatchControls()
             }
-            Spacer()
-            Button {
-                state.run()
-            } label: {
-                Label("Run", systemImage: "play.fill")
-                    .frame(minWidth: 80)
+
+            HStack {
+                if state.hasActiveRuns {
+                    Label("\(activeCount) running", systemImage: "circle.dotted")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .glassEffect(.regular, in: .capsule)
+                }
+                Spacer()
+                Button {
+                    state.runBatch()
+                } label: {
+                    Label(state.batchSize > 1 ? "Run × \(state.batchSize)" : "Run", systemImage: "play.fill")
+                        .frame(minWidth: 80)
+                }
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(state.schema == nil || state.apiKey.isEmpty)
+                .help("Submit \(state.batchSize > 1 ? "\(state.batchSize) runs" : "a run") (⌘↩). Each variation gets a fresh random seed.")
             }
-            .buttonStyle(.glassProminent)
-            .controlSize(.large)
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(state.schema == nil || state.apiKey.isEmpty)
-            .help("Submit a new run — fires immediately, no waiting (⌘↩)")
         }
         .padding(12)
     }
 
     private var activeCount: Int {
         state.runs.filter { $0.status == .IN_QUEUE || $0.status == .IN_PROGRESS }.count
+    }
+}
+
+// MARK: - Presets / prompt library / batch controls
+
+private struct PresetMenu: View {
+    @EnvironmentObject var state: AppState
+    @State private var promptingForName = false
+    @State private var draftName = ""
+
+    var body: some View {
+        Menu {
+            if state.presetsForCurrentModel.isEmpty {
+                Text("No presets yet").foregroundStyle(.secondary)
+            } else {
+                ForEach(state.presetsForCurrentModel) { preset in
+                    Button(preset.name) { state.applyPreset(preset) }
+                }
+                Divider()
+                Menu("Delete preset") {
+                    ForEach(state.presetsForCurrentModel) { preset in
+                        Button(preset.name, role: .destructive) { state.deletePreset(preset) }
+                    }
+                }
+            }
+            Divider()
+            Button("Save current as preset…") { promptingForName = true }
+                .disabled(state.schema == nil)
+        } label: {
+            Label("Presets", systemImage: "star.bubble")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Save the current form as a reusable preset, or load a saved one")
+        .sheet(isPresented: $promptingForName) {
+            VStack(spacing: 12) {
+                Text("Save preset").font(.headline)
+                TextField("Name", text: $draftName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 280)
+                HStack {
+                    Button("Cancel", role: .cancel) {
+                        draftName = ""
+                        promptingForName = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Save") {
+                        state.savePreset(name: draftName)
+                        draftName = ""
+                        promptingForName = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(16)
+            .frame(minWidth: 340)
+        }
+    }
+}
+
+private struct PromptLibraryMenu: View {
+    @EnvironmentObject var state: AppState
+    @State private var promptingForTitle = false
+    @State private var draftTitle = ""
+
+    var body: some View {
+        Menu {
+            if state.savedPrompts.isEmpty {
+                Text("No saved prompts").foregroundStyle(.secondary)
+            } else {
+                ForEach(state.savedPrompts) { prompt in
+                    Button(prompt.title) { state.applyPrompt(prompt) }
+                        .help(prompt.text)
+                }
+                Divider()
+                Menu("Delete prompt") {
+                    ForEach(state.savedPrompts) { prompt in
+                        Button(prompt.title, role: .destructive) { state.deletePrompt(prompt) }
+                    }
+                }
+            }
+            Divider()
+            Button("Save current prompt…") { promptingForTitle = true }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+        } label: {
+            Label("Prompts", systemImage: "text.book.closed")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Insert a saved prompt (⇧⌘P to save the current one)")
+        .sheet(isPresented: $promptingForTitle) {
+            VStack(spacing: 12) {
+                Text("Save prompt").font(.headline)
+                TextField("Title (optional)", text: $draftTitle)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 280)
+                HStack {
+                    Button("Cancel", role: .cancel) {
+                        draftTitle = ""
+                        promptingForTitle = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Save") {
+                        state.saveCurrentPrompt(title: draftTitle)
+                        draftTitle = ""
+                        promptingForTitle = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+            .frame(minWidth: 340)
+        }
+    }
+}
+
+private struct BatchControls: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("× \(state.batchSize)")
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Stepper("Batch size",
+                    value: Binding(get: { state.batchSize },
+                                   set: { state.batchSize = max(1, min(16, $0)) }),
+                    in: 1...16)
+                .labelsHidden()
+                .controlSize(.small)
+        }
+        .help("Number of variations to submit per click. Each gets a fresh random seed.")
     }
 }
 
@@ -302,6 +450,8 @@ private struct StringField: View {
         return nil
     }
 
+    @State private var isDropTargeted: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if isLongText {
@@ -318,6 +468,22 @@ private struct StringField: View {
             }
 
             if isURL {
+                // Drop overlay only visible while a drop is hovering. Lets
+                // the user drag a file from Finder / Safari / Messages
+                // straight into this field; the file is uploaded to the
+                // fal CDN and the resulting URL pasted in.
+                if isDropTargeted {
+                    HStack(spacing: 6) {
+                        Image(systemName: "tray.and.arrow.down.fill")
+                        Text("Drop to upload")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .glassEffect(.regular.tint(Color.accentColor.opacity(0.3)), in: .capsule)
+                    .transition(.opacity)
+                }
+
                 // Thumbnail of the current image, clickable to open the
                 // full-size preview sheet. Rendered above the upload button.
                 if let imgURL = currentImageURL {
@@ -348,10 +514,101 @@ private struct StringField: View {
                 }
             }
         }
+        .if(isURL) { content in
+            content
+                .onDrop(of: [.fileURL, .image, .url],
+                        isTargeted: $isDropTargeted.animation(.easeOut(duration: 0.1))) { providers in
+                    handleDrop(providers: providers)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.accentColor.opacity(isDropTargeted ? 0.7 : 0), lineWidth: 1.5)
+                        .padding(-4)
+                        .allowsHitTesting(false)
+                )
+        }
     }
 
     @State private var isUploading = false
     @State private var uploadError: String?
+
+    /// Drop handler for the URL field. Accepts file URLs from Finder, image
+    /// data from browsers, and http(s) URLs from text drags. The first
+    /// provider that matches wins.
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard !isUploading else { return false }
+
+        // 1) File URL from Finder
+        if let fileProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
+            _ = fileProvider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in uploadLocal(url: url) }
+            }
+            return true
+        }
+
+        // 2) Image payload from a browser (PNG / JPEG / etc.)
+        if let imgProvider = providers.first(where: { $0.canLoadObject(ofClass: NSImage.self) }) {
+            _ = imgProvider.loadObject(ofClass: NSImage.self) { obj, _ in
+                guard let img = obj as? NSImage,
+                      let data = img.pngRepresentation else { return }
+                Task { @MainActor in uploadData(data: data, ext: "png") }
+            }
+            return true
+        }
+
+        // 3) Plain text URL ("https://…") dragged from somewhere — paste verbatim.
+        if let urlProvider = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) {
+            _ = urlProvider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in value = .string(url.absoluteString) }
+            }
+            return true
+        }
+        return false
+    }
+
+    private func uploadLocal(url: URL) {
+        isUploading = true
+        uploadError = nil
+        Task {
+            do {
+                let result = try await FalAPI.shared.uploadFile(url)
+                await MainActor.run {
+                    value = .string(result)
+                    isUploading = false
+                }
+            } catch {
+                await MainActor.run {
+                    uploadError = error.localizedDescription
+                    isUploading = false
+                }
+            }
+        }
+    }
+
+    private func uploadData(data: Data, ext: String) {
+        isUploading = true
+        uploadError = nil
+        Task {
+            let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("falmac-drop-\(UUID().uuidString).\(ext)")
+            do {
+                try data.write(to: tmp)
+                let result = try await FalAPI.shared.uploadFile(tmp)
+                try? FileManager.default.removeItem(at: tmp)
+                await MainActor.run {
+                    value = .string(result)
+                    isUploading = false
+                }
+            } catch {
+                await MainActor.run {
+                    uploadError = error.localizedDescription
+                    isUploading = false
+                }
+            }
+        }
+    }
 
     private var stringBinding: Binding<String> {
         Binding(
@@ -621,5 +878,31 @@ extension AppState {
             get: { self.formValues[key] ?? .null },
             set: { self.formValues[key] = $0 }
         )
+    }
+}
+
+// MARK: - Helpers
+
+extension View {
+    /// Conditionally apply a modifier — used here so we can scope onDrop
+    /// + drop overlay to URL-shaped fields without exposing two view
+    /// branches.
+    @ViewBuilder
+    func `if`<Transform: View>(
+        _ condition: Bool,
+        transform: (Self) -> Transform
+    ) -> some View {
+        if condition { transform(self) } else { self }
+    }
+}
+
+extension NSImage {
+    /// Encode the first representation as PNG. Used for drag-drop image
+    /// payloads dropped from browsers where we get an NSImage rather than
+    /// a file URL.
+    var pngRepresentation: Data? {
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 }

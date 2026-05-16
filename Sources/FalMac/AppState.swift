@@ -70,6 +70,9 @@ final class AppState: ObservableObject {
     // Form state — dictionary by property name. We carry only fields the
     // user has touched (or that have defaults the model still needs).
     @Published var formValues: [String: JSONValue] = [:]
+    /// Number of variation runs spawned per Run press. Each variation gets
+    /// a fresh random seed so the model produces different outputs.
+    @Published var batchSize: Int = 1
 
     /// All runs (newest first). Active + completed all live here so the
     /// queue panel can render them as a single stack. The polling Task for
@@ -124,6 +127,68 @@ final class AppState: ObservableObject {
     private static func saveRecents(_ list: [FalModelSummary]) {
         guard let data = try? JSONEncoder().encode(list) else { return }
         UserDefaults.standard.set(data, forKey: recentsUDKey)
+    }
+
+    // MARK: - Presets
+
+    @Published private(set) var presets: [String: [ModelPreset]] = PresetStore.load()
+
+    /// Presets for the currently-selected model, sorted by creation order.
+    var presetsForCurrentModel: [ModelPreset] {
+        guard let id = selectedModelId else { return [] }
+        return presets[id] ?? []
+    }
+
+    func savePreset(name: String) {
+        guard let id = selectedModelId else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let preset = ModelPreset(name: trimmed, values: formValues)
+        presets[id, default: []].append(preset)
+        PresetStore.save(presets)
+    }
+
+    func applyPreset(_ preset: ModelPreset) {
+        formValues = preset.values
+    }
+
+    func deletePreset(_ preset: ModelPreset) {
+        guard let id = selectedModelId else { return }
+        presets[id]?.removeAll { $0.id == preset.id }
+        if presets[id]?.isEmpty == true { presets.removeValue(forKey: id) }
+        PresetStore.save(presets)
+    }
+
+    // MARK: - Prompt library
+
+    @Published private(set) var savedPrompts: [SavedPrompt] = PromptLibrary.load()
+
+    func saveCurrentPrompt(title: String) {
+        // Try to read the current prompt-shaped field out of the form values.
+        let text = (formValues["prompt"]?.stringValue
+                    ?? formValues["text"]?.stringValue
+                    ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        savedPrompts.insert(SavedPrompt(title: title.isEmpty ? String(text.prefix(40)) : title, text: text), at: 0)
+        PromptLibrary.save(savedPrompts)
+    }
+
+    func deletePrompt(_ prompt: SavedPrompt) {
+        savedPrompts.removeAll { $0.id == prompt.id }
+        PromptLibrary.save(savedPrompts)
+    }
+
+    func applyPrompt(_ prompt: SavedPrompt) {
+        // Write into whichever string field looks like the prompt slot.
+        for key in ["prompt", "text", "input", "description"] {
+            if formValues[key]?.stringValue != nil || (schema?.properties.contains { $0.name == key } ?? false) {
+                formValues[key] = .string(prompt.text)
+                return
+            }
+        }
+        // Fallback: just stash it under "prompt".
+        formValues["prompt"] = .string(prompt.text)
     }
 
     // MARK: - Favorites
@@ -376,6 +441,22 @@ final class AppState: ObservableObject {
             formValues = dict
         }
         if !loadIntoForm { self.run() }
+    }
+
+    /// Submit `batchSize` runs back-to-back, each with a fresh random seed
+    /// when the model exposes one. Used by the "Run × N" button.
+    func runBatch() {
+        let n = max(1, batchSize)
+        guard let schema = schema else { run(); return }
+        let hasSeedField = schema.properties.contains { $0.name == "seed" }
+        for _ in 0..<n {
+            if hasSeedField {
+                // Random seed in the 32-bit positive range so it serializes
+                // cleanly as Int across all fal models we've seen.
+                formValues["seed"] = .int(Int.random(in: 1...Int(Int32.max)))
+            }
+            run()
+        }
     }
 
     /// Fire-and-forget. Adds a new run to the top of the queue and spawns its

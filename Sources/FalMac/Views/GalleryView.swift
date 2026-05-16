@@ -223,6 +223,12 @@ private struct GalleryTileView: View {
         }
         .buttonStyle(.plain)
         .glassCard(cornerRadius: 12)
+        // Drag tile out to Finder / Mail / Messages / AirDrop. NSItemProvider
+        // with the on-disk file URL — the destination app reads the bytes
+        // directly from disk, no upload needed.
+        .onDrag {
+            NSItemProvider(contentsOf: localURL) ?? NSItemProvider()
+        }
         .contextMenu { contextMenu }
         .sheet(isPresented: $showImagePreview) {
             ImagePreviewSheet(url: localURL)
