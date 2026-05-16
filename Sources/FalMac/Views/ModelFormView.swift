@@ -232,6 +232,29 @@ private struct StringField: View {
         return bareNames.contains(n)
     }
 
+    /// True when this field is for an image (used to decide whether to show
+    /// the inline thumbnail above the upload button).
+    private var isImageField: Bool {
+        let n = node.name.lowercased()
+        if n.contains("image") || n.contains("mask") || n.contains("photo") || n.contains("face") || n.contains("reference") { return true }
+        return false
+    }
+
+    /// The current value as a remote URL, if it looks like one and points at an
+    /// image (by extension or because the field's name implies image content).
+    private var currentImageURL: URL? {
+        let s = value.stringValue ?? ""
+        guard !s.isEmpty,
+              let u = URL(string: s),
+              let scheme = u.scheme,
+              scheme.hasPrefix("http") else { return nil }
+        let ext = u.pathExtension.lowercased()
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp"]
+        if imageExts.contains(ext) { return u }
+        if isImageField { return u } // fal CDN URLs sometimes lack extensions
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if isLongText {
@@ -248,6 +271,12 @@ private struct StringField: View {
             }
 
             if isURL {
+                // Thumbnail of the current image, clickable to open the
+                // full-size preview sheet. Rendered above the upload button.
+                if let imgURL = currentImageURL {
+                    ImageThumbnailView(url: imgURL, size: 96)
+                }
+
                 HStack {
                     Button {
                         pickAndUpload()
@@ -255,6 +284,14 @@ private struct StringField: View {
                         Label("Upload file…", systemImage: "arrow.up.doc")
                     }
                     .buttonStyle(.bordered)
+                    if currentImageURL != nil {
+                        Button {
+                            value = .string("")
+                        } label: {
+                            Label("Clear", systemImage: "xmark")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                     if isUploading {
                         ProgressView().controlSize(.small)
                     }
@@ -354,14 +391,7 @@ private struct ArrayField: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { idx, url in
                     HStack(spacing: 8) {
                         if isImageArray, let u = URL(string: url), u.scheme?.hasPrefix("http") == true {
-                            AsyncImage(url: u) { phase in
-                                switch phase {
-                                case .success(let img): img.resizable().scaledToFill()
-                                default: Color.gray.opacity(0.15)
-                                }
-                            }
-                            .frame(width: 36, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            ImageThumbnailView(url: u, size: 48, cornerRadius: 4)
                         }
                         Text(url)
                             .font(.caption.monospaced())
