@@ -29,24 +29,57 @@
 - **One-click Download** — saves to your chosen default folder (no per-file picker) with name de-duplication, then reveals in Finder. Raw JSON response is always copyable.
 - **Cancel** in-flight requests via `PUT …/cancel`.
 
-## Build & run
+## Install (prebuilt `.dmg`)
 
-### Option A — `swift run` (fastest)
+> [!IMPORTANT]
+> The downloaded `.app` is **not notarized**. macOS Gatekeeper will refuse to open it on first launch with a message like *"FalMac.app is damaged and can't be opened"* or *"can't be opened because Apple cannot check it for malicious software."* This is normal for unsigned hobby apps. Pick one of the bypass methods below.
+
+1. **Download** the latest `FalMac-*.dmg` from the [Releases](https://github.com/moerdowo/fal-mac/releases) page.
+2. Open the DMG and drag **FalMac.app** to the **Applications** folder.
+3. First-launch Gatekeeper bypass — choose **one**:
+
+   - **Easiest — strip the quarantine flag** (one Terminal command):
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/FalMac.app
+     ```
+     Then double-click as normal.
+
+   - **GUI route**: right-click **FalMac.app** in Applications → **Open** → click **Open** in the warning dialog. From then on it launches normally.
+
+   - **System Settings**: try to open the app, when blocked go to **System Settings → Privacy & Security**, scroll to the bottom, click **Open Anyway** next to the FalMac entry.
+
+4. Open **Settings (⌘,)** in the app and paste your fal.ai API key.
+
+The app is **Apple-silicon only** (Swift 6 / macOS 26+). Intel builds aren't shipped.
+
+## Build from source
+
+### Option A — `swift run` (fastest, dev mode)
 
 ```bash
 cd fal-mac
 swift run
 ```
 
-A window opens. Use the menu **FalMac → Settings…** (or ⌘,) and paste your fal.ai key, then hit Save. The sidebar will populate.
+A window opens. Use **Settings (⌘,)** and paste your fal.ai key, then hit Save. The sidebar will populate.
 
-### Option B — Real `.app` in Xcode (recommended for daily use)
+### Option B — Open in Xcode (recommended for hacking)
 
 ```bash
 open Package.swift
 ```
 
-Xcode opens the Swift Package. Pick the **FalMac** scheme and the **My Mac** destination, then ⌘R. To export a distributable app, **Product → Archive**.
+Xcode opens the Swift Package. Pick the **FalMac** scheme and **My Mac** as destination, then ⌘R.
+
+### Option C — Build your own DMG
+
+```bash
+scripts/build_dmg.sh
+# or, with an explicit version:
+VERSION=1.2.3 scripts/build_dmg.sh
+```
+
+Produces `build/FalMac-<version>.dmg`. The script does a release build, hand-rolls the `.app` bundle (Info.plist, AppIcon.icns, copies the SPM resource bundle), ad-hoc signs it so Gatekeeper will let it launch, and wraps it in a UDZO-compressed DMG with an `/Applications` symlink.
 
 ## Getting an API key
 
