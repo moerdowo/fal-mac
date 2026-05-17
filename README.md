@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/single--file--build-✓-1f6feb" alt="single file build" />
 </p>
 
+<p align="center">
+  <img src="preview.jpg" width="900" alt="FalMac main window — Nano Banana 2 generating a Balinese barong painting, with the parallel run queue on the right and the favorites filter open in the sidebar" />
+</p>
+
 ## Features
 
 - **Liquid Glass UI** — uses the macOS 26 `glassEffect()` / `GlassEffectContainer` APIs throughout: status-tinted glass cards in the queue, `.glassProminent` Run button, glass pill for the balance chip, interactive glass thumbnails.
